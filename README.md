@@ -73,7 +73,9 @@ All ops return a new `Tensor*` that participates in the computation graph.
 ```c
 extern int tg_training;  // 1 = training mode (default), 0 = inference — disables dropout
 
-void tg_backward(Tensor *root);          // reverse-mode autodiff from root
+void tg_backward(Tensor *root);          // zero all grads in graph, then reverse-mode autodiff
+void tg_backward_accum(Tensor *root);    // backward without zeroing grads (accumulate)
+void tg_zero_grads(Tensor **params, int n);           // zero grad arrays for a param list
 void tg_sgd_step(Tensor **params, int n, float lr);  // in-place SGD
 void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
                   float lr, int step, float beta1, float beta2, float eps);  // bias-corrected Adam
@@ -137,8 +139,13 @@ int     tg_gpt_collect_params(TgGPT *g, Tensor **params);
 ## Build
 
 ```powershell
-cd otto_von_grad
+cd otto-von-grad
 cmake -B build
+cmake --build build
+.\build\Debug\otto_von_grad.exe
+
+# With CUDA
+cmake -B build -DOVG_CUDA=ON
 cmake --build build
 .\build\Debug\otto_von_grad.exe
 ```
