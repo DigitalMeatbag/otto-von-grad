@@ -2,9 +2,8 @@
 
 Reverse-mode autograd engine and neural-network infrastructure, written from scratch in C.
 
-`otto_von_grad` is the core engine of MetalBag. It contains two historical layers that illustrate
-the progression from scalar to tensor autodiff, then from simple MLPs up to a full GPT-style
-transformer.
+Contains two historical layers that illustrate the progression from scalar to tensor autodiff,
+then from simple MLPs up to a full GPT-style transformer.
 
 ---
 
@@ -156,7 +155,28 @@ CMake produces two targets:
 
 ---
 
-## Role in MetalBag
+## Usage as a Dependency
 
-`otto_von_grad` is the engine that powers `vexilloscope`. The `vexilloscope` project links
-against the `ottovongrad` static library via `add_subdirectory`.
+`otto-von-grad` is designed to be consumed as a CMake static library. The `ottovongrad`
+target is exported with `PUBLIC` include directories, so consumers just link and include:
+
+```cmake
+# Side-by-side checkout
+if(NOT TARGET ottovongrad)
+    add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../otto-von-grad"
+                     "${CMAKE_CURRENT_BINARY_DIR}/otto-von-grad")
+endif()
+target_link_libraries(your_target PRIVATE ottovongrad)
+```
+
+Or via FetchContent:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(ottovongrad
+    GIT_REPOSITORY https://github.com/DigitalMeatbag/otto-von-grad.git
+    GIT_TAG        main
+)
+FetchContent_MakeAvailable(ottovongrad)
+target_link_libraries(your_target PRIVATE ottovongrad)
+```
