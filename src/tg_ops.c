@@ -19,7 +19,11 @@ static Tensor *make_op(int rows, int cols, Tensor *p0, Tensor *p1, TgBackwardFn 
     out->n_parents   = p1 ? 2 : 1;
     out->backward_fn = fn;
 #ifdef OVG_CUDA_ENABLED
-    // Propagate GPU placement: if any parent lives on GPU, output does too.
+    if (p0 && p1 && p0->on_cuda != p1->on_cuda) {
+        fprintf(stderr, "make_op: mixed CUDA/CPU parents (p0.on_cuda=%d, p1.on_cuda=%d)\n",
+                p0->on_cuda, p1->on_cuda);
+        exit(1);
+    }
     if ((p0 && p0->on_cuda) || (p1 && p1->on_cuda))
         tg_cuda_alloc(out);
 #endif
@@ -629,7 +633,16 @@ Tensor *tg_concat_cols(Tensor **parts, int n_parts) {
     out->backward_fn = backward_concat_cols;
 
 #ifdef OVG_CUDA_ENABLED
-    // Propagate GPU placement if any part is on GPU.
+    {
+        int any_gpu = 0, all_gpu = 0;
+        for (int i = 0; i < n_parts; i++) if (parts[i]->on_cuda) any_gpu = 1;
+        all_gpu = 1;
+        for (int i = 0; i < n_parts; i++) if (!parts[i]->on_cuda) all_gpu = 0;
+        if (any_gpu && !all_gpu) {
+            fprintf(stderr, "tg_concat_cols: mixed CUDA/CPU parts\n");
+            exit(1);
+        }
+    }
     int any_gpu = 0;
     for (int i = 0; i < n_parts; i++) if (parts[i]->on_cuda) { any_gpu = 1; break; }
     if (any_gpu) {
