@@ -634,26 +634,25 @@ Tensor *tg_concat_cols(Tensor **parts, int n_parts) {
 
 #ifdef OVG_CUDA_ENABLED
     {
-        int any_gpu = 0, all_gpu = 0;
-        for (int i = 0; i < n_parts; i++) if (parts[i]->on_cuda) any_gpu = 1;
-        all_gpu = 1;
-        for (int i = 0; i < n_parts; i++) if (!parts[i]->on_cuda) all_gpu = 0;
+        int any_gpu = 0, all_gpu = 1;
+        for (int i = 0; i < n_parts; i++) {
+            if (parts[i]->on_cuda) any_gpu = 1;
+            else                   all_gpu = 0;
+        }
         if (any_gpu && !all_gpu) {
             fprintf(stderr, "tg_concat_cols: mixed CUDA/CPU parts\n");
             exit(1);
         }
-    }
-    int any_gpu = 0;
-    for (int i = 0; i < n_parts; i++) if (parts[i]->on_cuda) { any_gpu = 1; break; }
-    if (any_gpu) {
-        tg_cuda_alloc(out);
-        int col_offset = 0;
-        for (int p = 0; p < n_parts; p++) {
-            cuda_concat_cols_fwd(parts[p]->cuda_data, out->cuda_data,
-                                 rows, parts[p]->cols, total_cols, col_offset);
-            col_offset += parts[p]->cols;
+        if (any_gpu) {
+            tg_cuda_alloc(out);
+            int col_offset = 0;
+            for (int p = 0; p < n_parts; p++) {
+                cuda_concat_cols_fwd(parts[p]->cuda_data, out->cuda_data,
+                                     rows, parts[p]->cols, total_cols, col_offset);
+                col_offset += parts[p]->cols;
+            }
+            return out;
         }
-        return out;
     }
 #endif
 
