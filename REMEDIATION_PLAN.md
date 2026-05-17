@@ -32,10 +32,13 @@ performance work.
 
 ## Pass 4: Low-Risk Performance Work
 
-- Consider blocked CPU matmul for better cache reuse.
-- Add an embedding gather op to avoid one-hot token embedding matmul.
-- Later, reduce attention allocation churn by avoiding repeated slice,
-  transpose, and concat nodes where possible.
+- ~~Consider blocked CPU matmul for better cache reuse.~~ (deferred — not in scope)
+- Add an embedding gather op to avoid one-hot token embedding matmul. **DONE** —
+  `tg_embed` in `tg_ops.c/h` with CPU gather/scatter-add and CUDA kernels using
+  `atomicAdd` for duplicate-token safety. `tg_gpt_forward` now takes `const int
+  *token_ids` directly; `make_one_hot` retained only for cross-entropy targets.
+- ~~Later, reduce attention allocation churn by avoiding repeated slice, transpose,
+  and concat nodes where possible.~~ (deferred)
 
 ## Recommended Sequencing
 

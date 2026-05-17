@@ -106,6 +106,11 @@ void cuda_cross_entropy_bwd(const float *probs, const float *targets,
                              const float *g, float *d_logits,
                              int rows, int cols);
 
+// embed: weight[V×C], ids[T] (float-encoded ints in cuda_cache) → out[T×C]
+// Backward uses atomicAdd — safe when ids contains duplicate token indices.
+void cuda_embed_fwd(const float *weight, const float *ids, float *out, int T, int C);
+void cuda_embed_bwd(const float *g, const float *ids, float *dw, int T, int C);
+
 // dropout: apply pre-computed mask (generated on CPU, uploaded to cuda_cache)
 void cuda_dropout_fwd(const float *a, const float *mask, float *out, int n);
 void cuda_dropout_bwd(const float *mask, const float *g, float *da, int n);

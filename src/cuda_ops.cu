@@ -650,6 +650,29 @@ void cuda_cross_entropy_bwd(const float *probs, const float *targets,
     cross_entropy_bwd_k<<<blocks(n),BLOCK>>>(probs, targets, g, d_logits, rows, cols);
 }
 
+// embed: weight[V×C], ids[T] (float-encoded ints) → out[T×C]
+__global__ void embed_fwd_k(const float *weight, const float *ids, float *out, int T, int C) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= T * C) return;
+    int t  = idx / C;
+    int c  = idx % C;
+    int id = (int)ids[t];
+    out[idx] = weight[id * C + c];
+}
+__global__ void embed_bwd_k(const float *g, const float *ids, float *dw, int T, int C) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= T * C) return;
+    int t  = idx / C;
+    int c  = idx % C;
+    int id = (int)ids[t];
+    atomicAdd(&dw[id * C + c], g[idx]);
+}
+
+void cuda_embed_fwd(const float *weight, const float *ids, float *out, int T, int C)
+    { embed_fwd_k<<<blocks(T * C),BLOCK>>>(weight, ids, out, T, C); }
+void cuda_embed_bwd(const float *g, const float *ids, float *dw, int T, int C)
+    { embed_bwd_k<<<blocks(T * C),BLOCK>>>(g, ids, dw, T, C); }
+
 // dropout: apply pre-computed mask (generated on CPU, stored in cuda_cache)
 __global__ void dropout_fwd_k(const float *a, const float *mask, float *out, int n) {
     int i = blockIdx.x * BLOCK + threadIdx.x;

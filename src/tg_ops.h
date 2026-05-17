@@ -22,5 +22,6 @@ Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets);
 Tensor *tg_slice_cols(Tensor *a, int col_start, int col_end);
 Tensor *tg_concat_cols(Tensor **parts, int n_parts);
 Tensor *tg_dropout(Tensor *a, float p);
+Tensor *tg_embed(Tensor *weight, const int *token_ids, int seq_len);
 
 #endif
