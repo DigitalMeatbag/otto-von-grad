@@ -66,12 +66,17 @@ All ops in `tg_ops.c / tg_ops.h`. Tensor struct and lifecycle in `tg_tensor.h`.
 
 * `tg_slice_cols(a, start, end)` — [R x C] → [R x (end-start)]
 * `tg_concat_cols(parts, n)`     — n × [R x C] → [R x (n*C)]
+* `tg_embed(weight, ids, T)`     — gather T rows from weight [V x C] by integer ids → [T x C]
 
 ### Attention / Normalization
 
 * `tg_causal_mask(scores)`       — mask future columns in [seq x seq]
 * `tg_layer_norm_rows(a, eps)`   — normalize each row over columns
 * `tg_softmax_rows(a)`           — softmax along each row
+
+### Regularization
+
+* `tg_dropout(a, p)` — inverted dropout; pass-through when `tg_training == 0` or `p == 0`
 
 ### Loss
 
@@ -161,8 +166,8 @@ File: `tg_gpt.c / tg_gpt.h`
 ```c
 TgGPT   tg_gpt_create(int vocab_size, int embed_dim, int hidden_dim,
                       int seq_len, int n_blocks, int n_heads);
-Tensor *tg_gpt_forward(TgGPT *g, Tensor *token_one_hot);  // [T x V] → [T x V] logits
-int     tg_gpt_collect_params(TgGPT *g, Tensor **params);
+Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids);   // int[seq_len] → [T x V] logits
+int     tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params);
 ```
 
 ---
