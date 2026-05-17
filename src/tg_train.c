@@ -30,6 +30,14 @@ static void clear_visited(Tensor **topo, int n) {
 }
 
 void tg_sgd_step(Tensor **params, int n_params, float lr) {
+#ifdef OVG_CUDA_ENABLED
+    for (int p = 0; p < n_params; p++) {
+        if (params[p]->on_cuda) {
+            fprintf(stderr, "tg_sgd_step: CUDA tensors not supported; use tg_adam_step_gpu\n");
+            exit(1);
+        }
+    }
+#endif
     for (int p = 0; p < n_params; p++) {
         Tensor *t = params[p];
         int n = t->rows * t->cols;
@@ -40,6 +48,14 @@ void tg_sgd_step(Tensor **params, int n_params, float lr) {
 
 void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
                   float lr, int step, float beta1, float beta2, float eps) {
+#ifdef OVG_CUDA_ENABLED
+    for (int p = 0; p < n_params; p++) {
+        if (params[p]->on_cuda) {
+            fprintf(stderr, "tg_adam_step: CUDA tensors not supported; use tg_adam_step_gpu\n");
+            exit(1);
+        }
+    }
+#endif
     float bc1 = 1.0f - powf(beta1, (float)step);
     float bc2 = 1.0f - powf(beta2, (float)step);
     for (int p = 0; p < n_params; p++) {

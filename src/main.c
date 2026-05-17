@@ -134,7 +134,7 @@ int main(void) {
     TgGPT gpt = tg_gpt_create(vocab.size, C, H, T, n_blocks, n_heads);
 
     Tensor *params[64];
-    int n_params = tg_gpt_collect_params(&gpt, params);
+    int n_params = tg_gpt_collect_params(&gpt, params, 64);
 
     printf("loaded candide.txt: %d chars\n", text_len);
     printf("vocab size: %d\n", vocab.size);

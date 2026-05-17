@@ -61,7 +61,12 @@ Tensor *tg_gpt_forward(TgGPT *g, Tensor *token_one_hot) {
     return tg_matmul(Y, g->Wout);
 }
 
-int tg_gpt_collect_params(TgGPT *g, Tensor **params) {
+int tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params) {
+    int needed = 3 + g->transformer.n_blocks * 8;
+    if (needed > max_params) {
+        fprintf(stderr, "tg_gpt_collect_params: need %d slots, capacity %d\n", needed, max_params);
+        exit(1);
+    }
     int n = 0;
     params[n++] = g->TokEmb;
     params[n++] = g->PosEmb;

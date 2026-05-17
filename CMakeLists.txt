@@ -21,12 +21,14 @@ set(OVG_SOURCES
 )
 
 if(OVG_CUDA)
-    enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 11)
     set(CMAKE_CUDA_ARCHITECTURES 89)
     # VS 18 (2026) is newer than CUDA 12.8's supported range; override the check.
     # The generated code is correct — MSVC ABI is stable across these versions.
+    # These must be set before enable_language(CUDA) so they apply during
+    # compiler identification, not just compilation.
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler")
+    enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
     list(APPEND OVG_SOURCES src/tg_cuda.cu src/cuda_ops.cu)
 endif()
