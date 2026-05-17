@@ -58,7 +58,7 @@ Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids) {
 }
 
 int tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params) {
-    int needed = 3 + g->transformer.n_blocks * 8;
+    int needed = 3 + g->transformer.n_blocks * 8;  /* 8 = Wq+Wk+Wv+Wo + W1+B1+W2+B2 */
     if (needed > max_params) {
         fprintf(stderr, "tg_gpt_collect_params: need %d slots, capacity %d\n", needed, max_params);
         exit(1);

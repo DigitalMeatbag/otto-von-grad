@@ -231,6 +231,7 @@ Files that only perform forward passes (no backward) need only `tg_ops.h`.
 * **2D tensors only** — all ops assume `[rows x cols]`.
 * **Eager dispatch** — one kernel launch per op; no graph compilation or kernel fusion.
 * **Performance** is not the current priority. Correctness and readability are.
+* **topo_sort is recursive** — stack depth equals graph depth. Safe for current models (depth ~200). If `TG_MAX_GRAPH` is raised and model depth grows large, convert to iterative.
 
 ---
 
