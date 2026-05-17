@@ -61,6 +61,7 @@ All ops return a new `Tensor*` that participates in the computation graph.
 | `tg_mean_rows(a)` | [R,C] → [1,C] | column-wise mean |
 | `tg_slice_cols(a, s, e)` | [R,C] → [R,(e-s)] | |
 | `tg_concat_cols(parts, n)` | n×[R,C] → [R,n*C] | |
+| `tg_embed(weight, ids, T)` | [V,C], int[T] → [T,C] | gather rows by token id |
 | `tg_causal_mask(scores)` | [T,T] → [T,T] | -1e9 on future positions |
 | `tg_layer_norm_rows(a, eps)` | same → same | row-wise normalization |
 | `tg_softmax_rows(a)` | same → same | row-wise softmax |
@@ -129,8 +130,8 @@ at character level; generates plausible character-texture output.
 
 ```c
 TgGPT   tg_gpt_create(int vocab_size, int embed_dim, int hidden_dim, int seq_len, int n_blocks, int n_heads);
-Tensor *tg_gpt_forward(TgGPT *g, Tensor *token_one_hot);  // [T×V] → [T×V] logits
-int     tg_gpt_collect_params(TgGPT *g, Tensor **params);
+Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids);   // int[seq_len] → [T×V] logits
+int     tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params);
 ```
 
 ---
@@ -139,14 +140,14 @@ int     tg_gpt_collect_params(TgGPT *g, Tensor **params);
 
 ```powershell
 cd otto-von-grad
-cmake -B build
+cmake -B build -G Ninja
 cmake --build build
-.\build\Debug\otto_von_grad.exe
+.\build\otto_von_grad.exe
 
 # With CUDA
-cmake -B build -DOVG_CUDA=ON
+cmake -B build -G Ninja -DOVG_CUDA=ON
 cmake --build build
-.\build\Debug\otto_von_grad.exe
+.\build\otto_von_grad.exe
 ```
 
 CMake produces two targets:
