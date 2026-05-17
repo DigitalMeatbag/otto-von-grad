@@ -42,6 +42,7 @@ if(OVG_CUDA)
 endif()
 
 if(NOT MSVC)
+    target_compile_options(ottovongrad PRIVATE -O3 -march=native -ffast-math)
     target_link_libraries(ottovongrad PUBLIC m)
 endif()
 
