@@ -1,10 +1,16 @@
 #include "smoke_tests.h"
 #include "tg_ops.h"
 #include "tg_train.h"
+#include "tg_gpt.h"
 #include "attention.h"
+
+#ifdef OVG_CUDA_ENABLED
+#include "tg_cuda.h"
+#endif
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static void print_grad_check(Tensor *t, const char *name) {
     int n = t->rows * t->cols, nonzero = 0;
@@ -130,3 +136,107 @@ void mean_rows_smoke_test(void) {
 
     printf("\n");
 }
+
+void transpose_grad_accum_test(void) {
+    printf("--- transpose grad accumulation test ---\n");
+
+    Tensor *A = tg_new(3, 4);
+    tg_fill(A, 1.0f);
+    A->persistent = 1;
+
+    Tensor *B    = tg_transpose(A);
+    Tensor *C    = tg_transpose(A);
+    Tensor *loss = tg_add(tg_sum(B), tg_sum(C));
+    tg_backward(loss);
+
+    int n = A->rows * A->cols, ok = 1;
+    for (int i = 0; i < n; i++)
+        if (fabsf(A->grad[i] - 2.0f) > 1e-5f) { ok = 0; break; }
+    printf("  CPU: A.grad all 2.0 (accumulation, not overwrite): %s\n", ok ? "PASS" : "FAIL");
+    if (!ok) exit(1);
+    tg_free_graph(loss);
+
+#ifdef OVG_CUDA_ENABLED
+    tg_to_cuda(A);
+
+    Tensor *Bg    = tg_transpose(A);
+    Tensor *Cg    = tg_transpose(A);
+    Tensor *lossg = tg_add(tg_sum(Bg), tg_sum(Cg));
+    tg_backward(lossg);
+    tg_from_cuda(A);
+
+    ok = 1;
+    for (int i = 0; i < n; i++)
+        if (fabsf(A->grad[i] - 2.0f) > 1e-5f) { ok = 0; break; }
+    printf("  CUDA: A.grad all 2.0 (transpose_bwd_k accumulation): %s\n", ok ? "PASS" : "FAIL");
+    if (!ok) exit(1);
+    tg_free_graph(lossg);
+    tg_cuda_free(A);
+#endif
+
+    A->persistent = 0;
+    tg_free(A);
+    printf("\n");
+}
+
+void collect_params_capacity_test(void) {
+    printf("--- collect_params capacity test ---\n");
+
+    // 1 block → need exactly 3 + 1*8 = 11 slots
+    TgGPT gpt = tg_gpt_create(16, 4, 8, 4, 1, 1);
+    Tensor *params[11];
+    int n = tg_gpt_collect_params(&gpt, params, 11);
+    printf("  exact-fit capacity (11 slots, 1 block): %s\n", n == 11 ? "PASS" : "FAIL");
+    if (n != 11) exit(1);
+    tg_gpt_free(&gpt);
+    printf("\n");
+}
+
+#ifdef OVG_CUDA_ENABLED
+void cuda_causal_mask_large_test(void) {
+    int T = 20; // > 16 forces multiple CUDA blocks (16x16 launch)
+    printf("--- CUDA causal mask T=%d (multi-block) test ---\n", T);
+
+    Tensor *scores = tg_new(T, T);
+    tg_fill(scores, 0.5f);
+    scores->persistent = 1;
+    tg_to_cuda(scores);
+
+    Tensor *masked = tg_causal_mask(scores);
+    tg_from_cuda(masked);
+
+    int ok_fwd = 1;
+    for (int i = 0; i < T && ok_fwd; i++)
+        for (int j = 0; j < T && ok_fwd; j++) {
+            float v = masked->data[i * T + j];
+            if (j <= i && fabsf(v - 0.5f) > 1e-4f) ok_fwd = 0;
+            if (j >  i && fabsf(v + 1e9f) > 1e4f)  ok_fwd = 0;
+        }
+    printf("  forward (rows 0-%d all covered): %s\n", T - 1, ok_fwd ? "PASS" : "FAIL");
+    if (!ok_fwd) exit(1);
+
+    Tensor *loss = tg_sum(masked);
+    tg_backward(loss);
+    tg_from_cuda(scores);
+
+    int ok_bwd = 1;
+    for (int i = 0; i < T && ok_bwd; i++)
+        for (int j = 0; j < T && ok_bwd; j++) {
+            float g = scores->grad[i * T + j];
+            if (j <= i && fabsf(g - 1.0f) > 1e-4f) ok_bwd = 0;
+            if (j >  i && fabsf(g)         > 1e-4f) ok_bwd = 0;
+        }
+    printf("  backward (rows 0-%d all covered): %s\n", T - 1, ok_bwd ? "PASS" : "FAIL");
+    if (!ok_bwd) exit(1);
+
+    tg_free_graph(loss);
+    tg_cuda_free(scores);
+    scores->persistent = 0;
+    tg_free(scores);
+    printf("\n");
+}
+
+/* Mixed-placement failure (one CPU parent + one CUDA parent → exit(1) in make_op)
+   cannot be tested inline without subprocess infrastructure on Windows.
+   To verify manually: call tg_to_cuda() on one input to an op but not the other. */
+#endif

@@ -113,6 +113,11 @@ int main(void) {
     encoder_smoke_test(4, 4);
 
     mean_rows_smoke_test();
+    transpose_grad_accum_test();
+    collect_params_capacity_test();
+#ifdef OVG_CUDA_ENABLED
+    cuda_causal_mask_large_test();
+#endif
 
     int text_len;
     char *text        = read_file("candide.txt", &text_len);
