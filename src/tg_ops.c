@@ -2,8 +2,10 @@
 #include "tg_train.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef OVG_CUDA_ENABLED
 #include "tg_cuda.h"
@@ -474,9 +476,15 @@ Tensor *tg_transpose(Tensor *a) {
 #ifdef OVG_CUDA_ENABLED
     if (out->on_cuda) { cuda_transpose_fwd(a->cuda_data, out->cuda_data, a->rows, a->cols); return out; }
 #endif
-    for (int i = 0; i < a->rows; i++)
-        for (int j = 0; j < a->cols; j++)
-            out->data[j * a->rows + i] = a->data[i * a->cols + j];
+    // Tiled transpose to keep writes within L1 cache during block iterations
+    int R = a->rows, C = a->cols;
+#define TBLOCK 32
+    for (int i = 0; i < R; i += TBLOCK)
+        for (int j = 0; j < C; j += TBLOCK)
+            for (int ii = i; ii < i + TBLOCK && ii < R; ii++)
+                for (int jj = j; jj < j + TBLOCK && jj < C; jj++)
+                    out->data[jj * R + ii] = a->data[ii * C + jj];
+#undef TBLOCK
     return out;
 }
 
@@ -529,16 +537,12 @@ Tensor *tg_layer_norm_rows(Tensor *a, float eps) {
         float *x = a->data + r * cols;
         float *y = out->data + r * cols;
 
-        float mean = 0.0f;
-        for (int j = 0; j < cols; j++) mean += x[j];
-        mean /= (float)cols;
-
-        float var = 0.0f;
-        for (int j = 0; j < cols; j++) {
-            float centered = x[j] - mean;
-            var += centered * centered;
-        }
-        var /= (float)cols;
+        // Single pass: accumulate sum and sum-of-squares simultaneously
+        float sum = 0.0f, sum2 = 0.0f;
+        for (int j = 0; j < cols; j++) { sum += x[j]; sum2 += x[j] * x[j]; }
+        float inv_cols = 1.0f / (float)cols;
+        float mean = sum * inv_cols;
+        float var  = sum2 * inv_cols - mean * mean;
 
         float inv_std = 1.0f / sqrtf(var + eps);
         out->cache[r] = inv_std;
@@ -591,15 +595,20 @@ Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
     if (!out->cache) { fprintf(stderr, "tg_cross_entropy: out of memory\n"); exit(1); }
     float loss = 0.0f;
     for (int r = 0; r < rows; r++) {
-        float *row  = logits->data + r * cols;
-        float *prob = out->cache   + r * cols;
+        float *row    = logits->data + r * cols;
+        float *prob   = out->cache   + r * cols;
+        const float *tgt = targets->data + r * cols;
         float mx = row[0];
         for (int j = 1; j < cols; j++) if (row[j] > mx) mx = row[j];
         float sum = 0.0f;
         for (int j = 0; j < cols; j++) { prob[j] = expf(row[j] - mx); sum += prob[j]; }
-        for (int j = 0; j < cols; j++) { prob[j] /= sum; }
-        for (int j = 0; j < cols; j++)
-            loss -= targets->data[r * cols + j] * logf(prob[j] + 1e-7f);
+        // log-sum-exp computed once per row; normalize probs and accumulate loss together
+        float log_sum_exp = logf(sum) + mx;
+        float inv_sum = 1.0f / sum;
+        for (int j = 0; j < cols; j++) {
+            prob[j] *= inv_sum;
+            loss -= tgt[j] * (row[j] - log_sum_exp);
+        }
     }
     out->data[0] = loss / (float)rows;
     return out;
@@ -676,8 +685,9 @@ Tensor *tg_concat_cols(Tensor **parts, int n_parts) {
     for (int p = 0; p < n_parts; p++) {
         int w = parts[p]->cols;
         for (int i = 0; i < rows; i++)
-            for (int j = 0; j < w; j++)
-                out->data[i * total_cols + col_offset + j] = parts[p]->data[i * w + j];
+            memcpy(out->data + i * total_cols + col_offset,
+                   parts[p]->data + i * w,
+                   (size_t)w * sizeof(float));
         col_offset += w;
     }
     return out;
@@ -710,6 +720,15 @@ static void backward_dropout(Tensor *self) {
         a->grad[i] += self->cache[i] * self->grad[i];
 }
 
+// xorshift32: fast non-cryptographic PRNG; much faster than rand() with no lock contention
+static uint32_t s_dropout_rng = 0xdeadbeef;
+static inline uint32_t xorshift32(void) {
+    s_dropout_rng ^= s_dropout_rng << 13;
+    s_dropout_rng ^= s_dropout_rng >> 17;
+    s_dropout_rng ^= s_dropout_rng << 5;
+    return s_dropout_rng;
+}
+
 Tensor *tg_dropout(Tensor *a, float p) {
     Tensor *out = make_op(a->rows, a->cols, a, NULL, backward_dropout);
     int n = a->rows * a->cols;
@@ -722,8 +741,10 @@ Tensor *tg_dropout(Tensor *a, float p) {
         for (int i = 0; i < n; i++) mask[i] = 1.0f;
     } else {
         float inv_keep = 1.0f / (1.0f - p);
+        // Scale factor converts uint32 to [0, 1); compare against p threshold
+        const float scale = 1.0f / 4294967296.0f;
         for (int i = 0; i < n; i++)
-            mask[i] = ((float)rand() / ((float)RAND_MAX + 1.0f)) >= p ? inv_keep : 0.0f;
+            mask[i] = (xorshift32() * scale) >= p ? inv_keep : 0.0f;
     }
 
 #ifdef OVG_CUDA_ENABLED
