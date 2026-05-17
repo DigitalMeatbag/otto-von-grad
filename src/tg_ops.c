@@ -478,13 +478,12 @@ Tensor *tg_transpose(Tensor *a) {
 #endif
     // Tiled transpose to keep writes within L1 cache during block iterations
     int R = a->rows, C = a->cols;
-#define TBLOCK 32
-    for (int i = 0; i < R; i += TBLOCK)
-        for (int j = 0; j < C; j += TBLOCK)
-            for (int ii = i; ii < i + TBLOCK && ii < R; ii++)
-                for (int jj = j; jj < j + TBLOCK && jj < C; jj++)
+    static const int tblock = 32;
+    for (int i = 0; i < R; i += tblock)
+        for (int j = 0; j < C; j += tblock)
+            for (int ii = i; ii < i + tblock && ii < R; ii++)
+                for (int jj = j; jj < j + tblock && jj < C; jj++)
                     out->data[jj * R + ii] = a->data[ii * C + jj];
-#undef TBLOCK
     return out;
 }
 
@@ -586,7 +585,7 @@ Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
         cuda_cross_entropy_fwd(logits->cuda_data, targets->cuda_data,
                                out->cuda_cache, out->cuda_data, rows, cols);
 // Copy scalar loss to CPU so the training loop can print it
-        tg_from_cuda(out);   // 1×1 tensor: fast D2H copy
+        tg_from_cuda(out);   // sync scalar loss to host for printing; on_cuda stays 1 so backward uses cuda_cache
         return out;
     }
 #endif
@@ -721,6 +720,8 @@ static void backward_dropout(Tensor *self) {
 }
 
 // xorshift32: fast non-cryptographic PRNG; much faster than rand() with no lock contention
+// Fixed seed: dropout masks are deterministic across runs (intentional for reproducibility).
+// To vary masks, seed s_dropout_rng from an external source before the first tg_dropout call.
 static uint32_t s_dropout_rng = 0xdeadbeef;
 static inline uint32_t xorshift32(void) {
     s_dropout_rng ^= s_dropout_rng << 13;

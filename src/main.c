@@ -146,10 +146,13 @@ int main(void) {
     printf("params: %d tensors\n", n_params);
     printf("baseline ln(%d) ~= %.6f\n", vocab.size, logf((float)vocab.size));
 
+    int *inputs  = malloc((size_t)T * sizeof(int));
+    int *targets = malloc((size_t)T * sizeof(int));
+    if (!inputs || !targets) { fprintf(stderr, "out of memory\n"); exit(1); }
+
     int max_start = text_len - T - 1;
     for (int step = 1; step <= steps; step++) {
         int start = (step * 17) % max_start;
-        int inputs[8], targets[8];
         for (int i = 0; i < T; i++) {
             inputs[i]  = all_tokens[start + i];
             targets[i] = all_tokens[start + i + 1];
@@ -168,7 +171,7 @@ int main(void) {
         tg_free_graph(loss);
     }
 
-    int eval_in[8], eval_tgt[8];
+    int *eval_in = inputs, *eval_tgt = targets;
     for (int i = 0; i < T; i++) {
         eval_in[i]  = all_tokens[i];
         eval_tgt[i] = all_tokens[i + 1];
@@ -182,6 +185,8 @@ int main(void) {
 
     tg_free_graph(eval_loss);
     tg_gpt_free(&gpt);
+    free(inputs);
+    free(targets);
     free(all_tokens);
     free(text);
 

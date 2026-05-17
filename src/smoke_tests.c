@@ -28,6 +28,7 @@ void attention_smoke_test(int T, int C, int n_heads) {
 
     Tensor *X = tg_new(T, C);
     tg_fill_randn(X, 0.5f);
+    X->persistent = 1;
 
     TgSelfAttention attn = tg_attention_create(C, n_heads);
     TgAttentionForward f = tg_attention_forward_full(&attn, X);
@@ -46,10 +47,9 @@ void attention_smoke_test(int T, int C, int n_heads) {
     print_grad_check(attn.Wo, "Wo");
     print_grad_check(X, "X");
 
-    tg_free(loss);
-    tg_free(Y);
-    tg_attention_forward_free(&f);
+    tg_free_graph(loss);
     tg_attention_free(&attn);
+    X->persistent = 0;
     tg_free(X);
 }
 
