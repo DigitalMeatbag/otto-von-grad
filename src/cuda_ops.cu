@@ -286,18 +286,21 @@ __global__ void transpose_k(const float *a, float *o, int rows, int cols) {
     if (i < rows && j < cols) o[j * rows + i] = a[i * cols + j];
 }
 
+__global__ void transpose_bwd_k(const float *g, float *da, int rows, int cols) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < rows && j < cols) da[j * rows + i] += g[i * cols + j];
+}
+
 void cuda_transpose_fwd(const float *a, float *o, int rows, int cols) {
     dim3 blk(16, 16);
     dim3 grd((cols+15)/16, (rows+15)/16);
     transpose_k<<<grd,blk>>>(a, o, rows, cols);
 }
 void cuda_transpose_bwd(const float *g, float *da, int out_rows, int out_cols) {
-    // da[j*out_cols+i] += g[i*out_rows+j]
-    // g is [out_rows × out_cols], da is [out_cols × out_rows]
-    // Transpose of g gives da — same kernel, swap roles
     dim3 blk(16, 16);
     dim3 grd((out_cols+15)/16, (out_rows+15)/16);
-    transpose_k<<<grd,blk>>>(g, da, out_rows, out_cols);
+    transpose_bwd_k<<<grd,blk>>>(g, da, out_rows, out_cols);
 }
 
 // ── Reductions ────────────────────────────────────────────────────────────────
@@ -503,14 +506,14 @@ void cuda_layer_norm_rows_bwd(const float *y, const float *dy,
 // ── Special ops ───────────────────────────────────────────────────────────────
 
 __global__ void causal_mask_fwd_k(const float *a, float *out, int T) {
-    int i = blockIdx.y * BLOCK + threadIdx.y;
-    int j = blockIdx.x * BLOCK + threadIdx.x;
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < T && j < T)
         out[i * T + j] = (j <= i) ? a[i * T + j] : -1.0e9f;
 }
 __global__ void causal_mask_bwd_k(const float *g, float *da, int T) {
-    int i = blockIdx.y * BLOCK + threadIdx.y;
-    int j = blockIdx.x * BLOCK + threadIdx.x;
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < T && j < T && j <= i)
         atomicAdd(&da[i * T + j], g[i * T + j]);
 }
