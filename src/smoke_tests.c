@@ -240,3 +240,60 @@ void cuda_causal_mask_large_test(void) {
    cannot be tested inline without subprocess infrastructure on Windows.
    To verify manually: call tg_to_cuda() on one input to an op but not the other. */
 #endif
+
+void embed_smoke_test(void) {
+    printf("--- tg_embed smoke test ---\n");
+
+    /* weight[4 x 3], ids = {0, 2, 0}:
+       token 0 appears twice → weight.grad row 0 should accumulate to 2.0,
+       token 2 appears once  → weight.grad row 2 should be 1.0,
+       rows 1 and 3 unused   → weight.grad should stay 0.0 */
+    int V = 4, C = 3, T = 3;
+    int ids[3] = {0, 2, 0};
+
+    Tensor *W = tg_new(V, C);
+    W->persistent = 1;
+    tg_fill_randn(W, 0.5f);
+
+    Tensor *out  = tg_embed(W, ids, T);
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    int ok = 1;
+    for (int c = 0; c < C && ok; c++) {
+        if (fabsf(W->grad[0 * C + c] - 2.0f) > 1e-5f) ok = 0;  // id 0 used twice
+        if (fabsf(W->grad[1 * C + c] - 0.0f) > 1e-5f) ok = 0;  // id 1 unused
+        if (fabsf(W->grad[2 * C + c] - 1.0f) > 1e-5f) ok = 0;  // id 2 used once
+        if (fabsf(W->grad[3 * C + c] - 0.0f) > 1e-5f) ok = 0;  // id 3 unused
+    }
+    printf("  CPU: weight.grad accumulation (rows 0/2/unused): %s\n", ok ? "PASS" : "FAIL");
+    if (!ok) exit(1);
+
+    tg_free_graph(loss);
+
+#ifdef OVG_CUDA_ENABLED
+    tg_to_cuda(W);
+
+    Tensor *outg  = tg_embed(W, ids, T);
+    Tensor *lossg = tg_sum(outg);
+    tg_backward(lossg);
+    tg_from_cuda(W);
+
+    ok = 1;
+    for (int c = 0; c < C && ok; c++) {
+        if (fabsf(W->grad[0 * C + c] - 2.0f) > 1e-5f) ok = 0;
+        if (fabsf(W->grad[1 * C + c] - 0.0f) > 1e-5f) ok = 0;
+        if (fabsf(W->grad[2 * C + c] - 1.0f) > 1e-5f) ok = 0;
+        if (fabsf(W->grad[3 * C + c] - 0.0f) > 1e-5f) ok = 0;
+    }
+    printf("  CUDA: weight.grad accumulation (atomicAdd correctness): %s\n", ok ? "PASS" : "FAIL");
+    if (!ok) exit(1);
+
+    tg_free_graph(lossg);
+    tg_cuda_free(W);
+#endif
+
+    W->persistent = 0;
+    tg_free(W);
+    printf("\n");
+}

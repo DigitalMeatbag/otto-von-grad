@@ -93,8 +93,7 @@ static void generate(TgGPT *g, const Vocab *v, const int *seed, int steps) {
     for (int i = 0; i < g->seq_len; i++) putchar(vocab_decode(v, ctx[i]));
 
     for (int s = 0; s < steps; s++) {
-        Tensor *one_hot = make_one_hot(ctx, g->seq_len, g->vocab_size);
-        Tensor *logits  = tg_gpt_forward(g, one_hot);
+        Tensor *logits = tg_gpt_forward(g, ctx);
         int next = argmax_row(logits, g->seq_len - 1);
         putchar(vocab_decode(v, next));
         for (int i = 0; i < g->seq_len - 1; i++) ctx[i] = ctx[i + 1];
@@ -115,6 +114,7 @@ int main(void) {
     mean_rows_smoke_test();
     transpose_grad_accum_test();
     collect_params_capacity_test();
+    embed_smoke_test();
 #ifdef OVG_CUDA_ENABLED
     cuda_causal_mask_large_test();
 #endif
@@ -155,9 +155,8 @@ int main(void) {
             targets[i] = all_tokens[start + i + 1];
         }
 
-        Tensor *in_hot  = make_one_hot(inputs,  T, vocab.size);
         Tensor *tgt_hot = make_one_hot(targets, T, vocab.size);
-        Tensor *logits  = tg_gpt_forward(&gpt, in_hot);
+        Tensor *logits  = tg_gpt_forward(&gpt, inputs);
         Tensor *loss    = tg_cross_entropy(logits, tgt_hot);
 
         tg_backward(loss);
@@ -174,9 +173,8 @@ int main(void) {
         eval_in[i]  = all_tokens[i];
         eval_tgt[i] = all_tokens[i + 1];
     }
-    Tensor *eval_in_hot  = make_one_hot(eval_in,  T, vocab.size);
     Tensor *eval_tgt_hot = make_one_hot(eval_tgt, T, vocab.size);
-    Tensor *eval_logits  = tg_gpt_forward(&gpt, eval_in_hot);
+    Tensor *eval_logits  = tg_gpt_forward(&gpt, eval_in);
     Tensor *eval_loss    = tg_cross_entropy(eval_logits, eval_tgt_hot);
     printf("final eval loss: %.6f\n", eval_loss->data[0]);
 

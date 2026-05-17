@@ -1,4 +1,5 @@
 #include "tg_gpt.h"
+#include "tg_ops.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,27 +36,22 @@ void tg_gpt_free(TgGPT *g) {
     g->Wout   = NULL;
 }
 
-Tensor *tg_gpt_forward(TgGPT *g, Tensor *token_one_hot) {
-    if (!g || !token_one_hot) {
+Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids) {
+    if (!g || !token_ids) {
         fprintf(stderr, "tg_gpt_forward: NULL argument\n");
-        exit(1);
-    }
-    if (token_one_hot->rows != g->seq_len || token_one_hot->cols != g->vocab_size) {
-        fprintf(stderr, "tg_gpt_forward: expected one_hot [%dx%d], got [%dx%d]\n",
-                g->seq_len, g->vocab_size, token_one_hot->rows, token_one_hot->cols);
         exit(1);
     }
 
     /*
-        token_one_hot: [T x V]
-        TokEmb:        [V x C]
-        Xtok:          [T x C]
+        token_ids:  [seq_len]  (integer token indices)
+        TokEmb:     [V x C]
+        Xtok:       [T x C]   (gathered rows of TokEmb)
 
         X = Xtok + PosEmb  [T x C]
         Y = transformer(X) [T x C]
         logits = Y @ Wout  [T x V]
     */
-    Tensor *Xtok   = tg_matmul(token_one_hot, g->TokEmb);
+    Tensor *Xtok   = tg_embed(g->TokEmb, token_ids, g->seq_len);
     Tensor *X      = tg_add(Xtok, g->PosEmb);
     Tensor *Y      = tg_transformer_forward(&g->transformer, X);
     return tg_matmul(Y, g->Wout);

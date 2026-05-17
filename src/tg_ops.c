@@ -319,6 +319,22 @@ static void backward_mean_rows(Tensor *self) {
             a->grad[i * cols + j] += self->grad[j] * inv_r;
 }
 
+static void backward_embed(Tensor *self) {
+    Tensor *weight = self->parents[0];
+    int T = self->rows, C = self->cols;
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) {
+        cuda_embed_bwd(self->cuda_grad, self->cuda_cache, weight->cuda_grad, T, C);
+        return;
+    }
+#endif
+    for (int t = 0; t < T; t++) {
+        int id = (int)self->cache[t];
+        for (int c = 0; c < C; c++)
+            weight->grad[id * C + c] += self->grad[t * C + c];
+    }
+}
+
 // ── Ops ───────────────────────────────────────────────────────────────────────
 
 Tensor *tg_add(Tensor *a, Tensor *b) {
@@ -722,5 +738,38 @@ Tensor *tg_dropout(Tensor *a, float p) {
 
     out->cache = mask;
     for (int i = 0; i < n; i++) out->data[i] = a->data[i] * mask[i];
+    return out;
+}
+
+Tensor *tg_embed(Tensor *weight, const int *token_ids, int seq_len) {
+    int V = weight->rows, C = weight->cols;
+    for (int t = 0; t < seq_len; t++) {
+        if (token_ids[t] < 0 || token_ids[t] >= V) {
+            fprintf(stderr, "tg_embed: token id %d out of range [0, %d)\n", token_ids[t], V);
+            exit(1);
+        }
+    }
+
+    Tensor *out = make_op(seq_len, C, weight, NULL, backward_embed);
+
+    // Cache ids as floats — CPU backward reads self->cache, CUDA backward reads cuda_cache
+    out->cache = malloc((size_t)seq_len * sizeof(float));
+    if (!out->cache) { fprintf(stderr, "tg_embed: out of memory\n"); exit(1); }
+    for (int t = 0; t < seq_len; t++) out->cache[t] = (float)token_ids[t];
+
+#ifdef OVG_CUDA_ENABLED
+    if (out->on_cuda) {
+        tg_cuda_alloc_cache(out, seq_len);
+        tg_cuda_upload_cache(out, out->cache, seq_len);
+        cuda_embed_fwd(weight->cuda_data, out->cuda_cache, out->cuda_data, seq_len, C);
+        return out;
+    }
+#endif
+
+    for (int t = 0; t < seq_len; t++) {
+        int id = token_ids[t];
+        for (int c = 0; c < C; c++)
+            out->data[t * C + c] = weight->data[id * C + c];
+    }
     return out;
 }
