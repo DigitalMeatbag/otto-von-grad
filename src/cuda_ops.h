@@ -49,7 +49,7 @@ void cuda_tanh_bwd(const float *out_data, const float *g, float *da, int n);
 // ── Transpose ────────────────────────────────────────────────────────────────
 
 void cuda_transpose_fwd(const float *a, float *out, int rows, int cols);
-// backward is also a transpose: da += transpose(grad_out)
+// da += transpose(g); accumulates into da (does not overwrite)
 void cuda_transpose_bwd(const float *g, float *da, int out_rows, int out_cols);
 
 // ── Reductions ────────────────────────────────────────────────────────────────
