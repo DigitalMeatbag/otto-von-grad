@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh pr *)",
+      "PowerShell(gh pr *)",
+      "PowerShell(git fetch *)",
+      "PowerShell(git checkout *)",
+      "PowerShell(cmake *)",
+      "PowerShell(.\\\\build_test\\\\otto_von_grad.exe 2>&1)",
+      "PowerShell(nvcc *)",
+      "PowerShell(.\\\\build_cuda_test\\\\otto_von_grad.exe 2>&1)",
+      "PowerShell(.\\\\build_test\\\\otto_von_grad.exe 2>&1 | Select-Object -First 20)",
+      "PowerShell(git pull *)",
+      "Bash(cmake -B build -G Ninja)",
+      "Bash(cmake --build build)",
+      "Bash(.\\\\build\\\\otto_von_grad.exe)"
+    ]
+  }
+}
