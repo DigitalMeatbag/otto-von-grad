@@ -19,7 +19,7 @@ void    tg_gpt_free(TgGPT *g);
 // token_one_hot: [seq_len x vocab_size] -> returns logits [seq_len x vocab_size]
 Tensor *tg_gpt_forward(TgGPT *g, Tensor *token_one_hot);
 
-// fills params[] with all trainable tensors, returns count
-int     tg_gpt_collect_params(TgGPT *g, Tensor **params);
+// fills params[] with all trainable tensors, returns count; exits if max_params is too small
+int     tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params);
 
 #endif
