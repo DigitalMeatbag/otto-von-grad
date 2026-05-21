@@ -46,6 +46,9 @@ void cuda_relu_bwd(const float *a, const float *g, float *da, int n);
 void cuda_tanh_fwd(const float *a, float *out, int n);
 void cuda_tanh_bwd(const float *out_data, const float *g, float *da, int n);
 
+void cuda_gelu_fwd(const float *a, float *out, int n);
+void cuda_gelu_bwd(const float *a, const float *g, float *da, int n);
+
 // ── Transpose ────────────────────────────────────────────────────────────────
 
 void cuda_transpose_fwd(const float *a, float *out, int rows, int cols);
@@ -76,6 +79,14 @@ void cuda_layer_norm_rows_fwd(const float *a, float eps, float *out,
 void cuda_layer_norm_rows_bwd(const float *y, const float *dy,
                                const float *inv_std, float *dx,
                                int rows, int cols);
+// cache layout: inv_std[rows], xhat[rows*cols]
+void cuda_layer_norm_rows_affine_fwd(const float *a, const float *gamma, const float *beta,
+                                      float eps, float *out, float *cache,
+                                      int rows, int cols);
+void cuda_layer_norm_rows_affine_bwd(const float *xhat, const float *dy,
+                                      const float *gamma, const float *inv_std,
+                                      float *dx, float *dgamma, float *dbeta,
+                                      int rows, int cols);
 
 // ── Special ops ───────────────────────────────────────────────────────────────
 
@@ -105,6 +116,13 @@ void cuda_cross_entropy_fwd(const float *logits, const float *targets,
 void cuda_cross_entropy_bwd(const float *probs, const float *targets,
                              const float *g, float *d_logits,
                              int rows, int cols);
+// sparse cache layout: probs[rows*cols], ids[rows]
+void cuda_cross_entropy_sparse_fwd(const float *logits, const float *ids,
+                                   float smoothing, float *probs, float *loss_out,
+                                   int rows, int cols);
+void cuda_cross_entropy_sparse_bwd(const float *probs, const float *ids,
+                                   const float *g, float smoothing, float *d_logits,
+                                   int rows, int cols);
 
 // embed: weight[V×C], ids[T] (float-encoded ints in cuda_cache) → out[T×C]
 // Backward uses atomicAdd — safe when ids contains duplicate token indices.
@@ -121,6 +139,8 @@ void cuda_dropout_bwd(const float *mask, const float *g, float *da, int n);
 void cuda_adam_step(float *param, float *m, float *v, const float *grad,
                     int n, float lr, float bc1, float bc2,
                     float beta1, float beta2, float eps);
+void cuda_grad_sumsq(const float *grad, float *sum_out, int n);
+void cuda_scale_grad(float *grad, float scale, int n);
 
 #ifdef __cplusplus
 }

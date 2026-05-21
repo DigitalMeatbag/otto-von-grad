@@ -44,6 +44,10 @@ float *tg_cuda_malloc_floats(int n);
 // Free a device float buffer previously allocated with tg_cuda_malloc_floats.
 void tg_cuda_free_floats(float *p);
 
+// Small scalar helpers for CUDA-side utility reductions.
+void  tg_cuda_zero_float(float *p);
+float tg_cuda_read_float(float *p);
+
 // Set t->cuda_grad[0] = val (used to seed tg_backward for the root loss tensor).
 void tg_cuda_set_grad_scalar(Tensor *t, float val);
 

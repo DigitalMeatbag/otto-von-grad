@@ -213,6 +213,75 @@ static void test_softmax_rows_sum(void) {
     tg_free(a);
 }
 
+static void test_gelu_forward_and_grad(void) {
+    Tensor *a = tg_new(1, 3);
+    a->persistent = 1;
+    a->data[0] = -1.0f;
+    a->data[1] =  0.0f;
+    a->data[2] =  2.0f;
+
+    Tensor *out = tg_gelu(a);
+    OVG_CHECK_NEAR(out->data[0], -0.158808f, 1e-4f);
+    OVG_CHECK_NEAR(out->data[1],  0.0f,      1e-5f);
+    OVG_CHECK_NEAR(out->data[2],  1.954598f, 1e-4f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    float saved = a->data[2];
+    float h = 1e-3f;
+    a->data[2] = saved + h;
+    Tensor *plus = tg_sum(tg_gelu(a));
+    float y_plus = plus->data[0];
+    tg_free_graph(plus);
+    a->data[2] = saved - h;
+    Tensor *minus = tg_sum(tg_gelu(a));
+    float y_minus = minus->data[0];
+    tg_free_graph(minus);
+    a->data[2] = saved;
+
+    float numeric = (y_plus - y_minus) / (2.0f * h);
+    OVG_CHECK_NEAR(a->grad[2], numeric, 2e-3f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+static void test_layer_norm_rows_affine(void) {
+    Tensor *a = tg_new(2, 3);
+    Tensor *gamma = tg_new(1, 3);
+    Tensor *beta = tg_new(1, 3);
+    Tensor *w = tg_new(2, 3);
+    a->persistent = gamma->persistent = beta->persistent = w->persistent = 1;
+
+    float av[] = {1, 2, 4, 2, 3, 8};
+    float gv[] = {1.0f, 0.5f, -1.0f};
+    float bv[] = {0.1f, -0.2f, 0.3f};
+    float wv[] = {0.2f, -0.7f, 1.1f, -0.3f, 0.4f, 0.9f};
+    for (int i = 0; i < 6; i++) { a->data[i] = av[i]; w->data[i] = wv[i]; }
+    for (int i = 0; i < 3; i++) { gamma->data[i] = gv[i]; beta->data[i] = bv[i]; }
+
+    Tensor *out = tg_layer_norm_rows_affine(a, gamma, beta, 1e-5f);
+    OVG_CHECK_SHAPE(out, 2, 3);
+    OVG_CHECK_NEAR(out->data[0], -0.969041f, 1e-4f);
+    OVG_CHECK_NEAR(out->data[1], -0.333630f, 1e-4f);
+    OVG_CHECK_NEAR(out->data[2], -1.036306f, 1e-4f);
+
+    Tensor *loss = tg_sum(tg_mul(out, w));
+    tg_backward(loss);
+
+    OVG_CHECK_NEAR(beta->grad[0], -0.1f, 1e-5f);
+    OVG_CHECK_NEAR(beta->grad[1], -0.3f, 1e-5f);
+    OVG_CHECK_NEAR(beta->grad[2],  2.0f, 1e-5f);
+    OVG_CHECK(fabsf(gamma->grad[0]) > 0.01f);
+    OVG_CHECK(fabsf(a->grad[0]) > 0.01f);
+
+    tg_free_graph(loss);
+    a->persistent = gamma->persistent = beta->persistent = w->persistent = 0;
+    tg_free(a); tg_free(gamma); tg_free(beta); tg_free(w);
+}
+
 /* ── Loss ────────────────────────────────────────────────────────────────── */
 
 static void test_cross_entropy_value(void) {
@@ -232,6 +301,49 @@ static void test_cross_entropy_value(void) {
     tg_free(loss);
     tg_free(logits);
     tg_free(targets);
+}
+
+static Tensor *make_dense_targets(const int *ids, int rows, int cols, float smoothing) {
+    Tensor *targets = tg_new(rows, cols);
+    float off = cols > 1 ? smoothing / (float)(cols - 1) : 0.0f;
+    for (int r = 0; r < rows; r++)
+        for (int j = 0; j < cols; j++)
+            targets->data[r * cols + j] = (j == ids[r]) ? (1.0f - smoothing) : off;
+    return targets;
+}
+
+static void test_cross_entropy_no_sync_cpu(void) {
+    Tensor *logits = tg_new(1, 3);
+    Tensor *targets = tg_new(1, 3);
+    logits->data[0] = 0.2f; logits->data[1] = -0.4f; logits->data[2] = 1.3f;
+    targets->data[2] = 1.0f;
+
+    Tensor *a = tg_cross_entropy(logits, targets);
+    Tensor *b = tg_cross_entropy_no_sync(logits, targets);
+    OVG_CHECK_NEAR(a->data[0], b->data[0], 1e-6f);
+
+    tg_free(a); tg_free(b); tg_free(logits); tg_free(targets);
+}
+
+static void test_cross_entropy_sparse_matches_dense(void) {
+    int ids[2] = {0, 2};
+    Tensor *logits = tg_new(2, 3);
+    float vals[] = {1.0f, 0.0f, -0.5f, -0.2f, 0.3f, 1.7f};
+    for (int i = 0; i < 6; i++) logits->data[i] = vals[i];
+
+    Tensor *hard_targets = make_dense_targets(ids, 2, 3, 0.0f);
+    Tensor *smooth_targets = make_dense_targets(ids, 2, 3, 0.2f);
+    Tensor *hard_dense = tg_cross_entropy(logits, hard_targets);
+    Tensor *hard_sparse = tg_cross_entropy_sparse(logits, ids, 2, 0.0f);
+    Tensor *smooth_dense = tg_cross_entropy(logits, smooth_targets);
+    Tensor *smooth_sparse = tg_cross_entropy_sparse(logits, ids, 2, 0.2f);
+
+    OVG_CHECK_NEAR(hard_dense->data[0], hard_sparse->data[0], 1e-6f);
+    OVG_CHECK_NEAR(smooth_dense->data[0], smooth_sparse->data[0], 1e-6f);
+
+    tg_free(hard_dense); tg_free(hard_sparse);
+    tg_free(smooth_dense); tg_free(smooth_sparse);
+    tg_free(hard_targets); tg_free(smooth_targets); tg_free(logits);
 }
 
 /* ── Slicing / embedding ─────────────────────────────────────────────────── */
@@ -320,7 +432,71 @@ static void test_embed_oob(void) {
     OVG_CHECK(strstr(g_last_error, "range") != NULL);
 }
 
+static void test_sparse_ce_oob(void) {
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *logits = tg_new(1, 3);
+        int ids[1] = {4};
+        tg_cross_entropy_sparse(logits, ids, 1, 0.0f);
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "range") != NULL);
+}
+
+static void test_layer_norm_affine_shape_mismatch(void) {
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *a = tg_new(2, 3);
+        Tensor *gamma = tg_new(1, 2);
+        Tensor *beta = tg_new(1, 3);
+        tg_layer_norm_rows_affine(a, gamma, beta, 1e-5f);
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "gamma") != NULL);
+}
+
 #ifdef OVG_CUDA_ENABLED
+static void test_cuda_new_ops(void) {
+    Tensor *a = tg_new(2, 3);
+    Tensor *gamma = tg_new(1, 3);
+    Tensor *beta = tg_new(1, 3);
+    int ids[2] = {1, 2};
+    float av[] = {-1.0f, 0.0f, 2.0f, 0.4f, -0.7f, 1.1f};
+    for (int i = 0; i < 6; i++) a->data[i] = av[i];
+    gamma->data[0] = 1.0f; gamma->data[1] = 0.5f; gamma->data[2] = -1.0f;
+    beta->data[0] = 0.1f; beta->data[1] = -0.2f; beta->data[2] = 0.3f;
+    a->persistent = gamma->persistent = beta->persistent = 1;
+    tg_to_cuda(a); tg_to_cuda(gamma); tg_to_cuda(beta);
+
+    Tensor *g = tg_gelu(a);
+    Tensor *ln = tg_layer_norm_rows_affine(g, gamma, beta, 1e-5f);
+    Tensor *loss = tg_cross_entropy_sparse_no_sync(ln, ids, 2, 0.1f);
+    float v = tg_scalar_value(loss);
+    OVG_CHECK(v > 0.0f);
+    tg_backward(loss);
+    tg_from_cuda(a);
+    OVG_CHECK(fabsf(a->grad[0]) > 1e-6f);
+
+    tg_free_graph(loss);
+    tg_cuda_free(a); tg_cuda_free(gamma); tg_cuda_free(beta);
+    a->persistent = gamma->persistent = beta->persistent = 0;
+    tg_free(a); tg_free(gamma); tg_free(beta);
+}
+
 static void test_cuda_causal_mask_large(void) {
     int T = 20;  /* > 16 forces multiple CUDA thread blocks (16×16 launch) */
     Tensor *scores = tg_new(T, T);
@@ -371,12 +547,19 @@ void run_ops_tests(int *passed, int *failed) {
     RUN_TEST(test_mean_rows,           passed, failed);
     RUN_TEST(test_layer_norm_forward,  passed, failed);
     RUN_TEST(test_softmax_rows_sum,    passed, failed);
+    RUN_TEST(test_gelu_forward_and_grad, passed, failed);
+    RUN_TEST(test_layer_norm_rows_affine, passed, failed);
     RUN_TEST(test_cross_entropy_value, passed, failed);
+    RUN_TEST(test_cross_entropy_no_sync_cpu, passed, failed);
+    RUN_TEST(test_cross_entropy_sparse_matches_dense, passed, failed);
     RUN_TEST(test_embed_grad_accum,    passed, failed);
     RUN_TEST(test_add_shape_mismatch,  passed, failed);
     RUN_TEST(test_matmul_shape_mismatch, passed, failed);
     RUN_TEST(test_embed_oob,           passed, failed);
+    RUN_TEST(test_sparse_ce_oob,       passed, failed);
+    RUN_TEST(test_layer_norm_affine_shape_mismatch, passed, failed);
 #ifdef OVG_CUDA_ENABLED
+    RUN_TEST(test_cuda_new_ops,        passed, failed);
     RUN_TEST(test_cuda_causal_mask_large, passed, failed);
 #endif
 }

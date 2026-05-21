@@ -9,6 +9,7 @@ extern int tg_training;
 void tg_sgd_step(Tensor **params, int n_params, float lr);
 void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
                   float lr, int step, float beta1, float beta2, float eps);
+float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps);
 
 // Standard backward: zeros all grads in the graph, then runs reverse-mode AD.
 void tg_backward(Tensor *root);

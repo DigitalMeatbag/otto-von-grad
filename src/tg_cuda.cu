@@ -84,6 +84,16 @@ void tg_cuda_free_floats(float *p) {
     if (p) cudaFree(p);
 }
 
+void tg_cuda_zero_float(float *p) {
+    CUDA_CHECK(cudaMemset(p, 0, sizeof(float)));
+}
+
+float tg_cuda_read_float(float *p) {
+    float v = 0.0f;
+    CUDA_CHECK(cudaMemcpy(&v, p, sizeof(float), cudaMemcpyDeviceToHost));
+    return v;
+}
+
 void tg_cuda_set_grad_scalar(Tensor *t, float val) {
     CUDA_CHECK(cudaMemcpy(t->cuda_grad, &val, sizeof(float), cudaMemcpyHostToDevice));
 }
