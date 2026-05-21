@@ -1,5 +1,6 @@
 #include "tg_ops.h"
 #include "tg_train.h"
+#include "tg_rng.h"
 #include "ovg_error.h"
 
 #include <math.h>
@@ -948,17 +949,6 @@ static void backward_dropout(Tensor *self) {
         a->grad[i] += self->cache[i] * self->grad[i];
 }
 
-// xorshift32: fast non-cryptographic PRNG; much faster than rand() with no lock contention
-// Fixed seed: dropout masks are deterministic across runs (intentional for reproducibility).
-// To vary masks, seed s_dropout_rng from an external source before the first tg_dropout call.
-static uint32_t s_dropout_rng = 0xdeadbeef;
-static inline uint32_t xorshift32(void) {
-    s_dropout_rng ^= s_dropout_rng << 13;
-    s_dropout_rng ^= s_dropout_rng >> 17;
-    s_dropout_rng ^= s_dropout_rng << 5;
-    return s_dropout_rng;
-}
-
 Tensor *tg_dropout(Tensor *a, float p) {
     Tensor *out = make_op(a->rows, a->cols, a, NULL, backward_dropout);
     int n = a->rows * a->cols;
@@ -974,7 +964,7 @@ Tensor *tg_dropout(Tensor *a, float p) {
         // Scale factor converts uint32 to [0, 1); compare against p threshold
         const float scale = 1.0f / 4294967296.0f;
         for (int i = 0; i < n; i++)
-            mask[i] = (xorshift32() * scale) >= p ? inv_keep : 0.0f;
+            mask[i] = (tg_rng_xorshift32() * scale) >= p ? inv_keep : 0.0f;
     }
 
 #ifdef OVG_CUDA_ENABLED

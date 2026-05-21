@@ -14,6 +14,7 @@ set(OVG_SOURCES
     src/tg_ops.c
     src/tg_train.c
     src/tg_mlp.c
+    src/tg_rng.c
     src/attention.c
     src/tg_block.c
     src/tg_transformer.c

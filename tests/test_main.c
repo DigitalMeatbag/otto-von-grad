@@ -1,4 +1,5 @@
 #include "ovg_test.h"
+#include "tg_rng.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -10,6 +11,7 @@ void run_attention_tests(int *passed, int *failed);
 void run_gpt_tests(int *passed, int *failed);
 
 int main(void) {
+    tg_seed(42);
     int passed = 0, failed = 0;
 
     printf("=== ops ===\n");
