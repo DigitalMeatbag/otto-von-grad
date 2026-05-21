@@ -27,6 +27,7 @@ otto-von-grad/
     tg_cuda.cu / tg_cuda.h          — CUDA tensor lifecycle (tg_to_cuda, tg_from_cuda)
     cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops
     ovg_error.c / ovg_error.h       — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
+    tg_rng.c / tg_rng.h             — RNG state and seeding (tg_seed, tg_seed_from_entropy, tg_rng_xorshift32)
     main.c                          — demo: GPT training on candide.txt
   tests/
     ovg_test.h                      — minimal test assertion macros

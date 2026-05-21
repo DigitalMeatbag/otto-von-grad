@@ -85,6 +85,8 @@ support it.
 - `src/cuda_ops.cu`, `src/cuda_ops.h`: CUDA kernels for tensor ops.
 - `src/ovg_error.c`, `src/ovg_error.h`: centralized fatal error handler (`ovg_fatal`,
   `ovg_set_fatal_handler`).
+- `src/tg_rng.c`, `src/tg_rng.h`: RNG state and seeding (`tg_seed`, `tg_seed_from_entropy`,
+  `tg_rng_xorshift32`). Owns both the `rand()` seed and the xorshift32 dropout state.
 - `src/tg_cuda.cu`, `src/tg_cuda.h`: tensor CUDA upload/download lifecycle.
 - `src/cuda_ops.cu`, `src/cuda_ops.h`: CUDA kernels for tensor ops.
 - `src/main.c`: GPT character-level demo using `candide.txt`.

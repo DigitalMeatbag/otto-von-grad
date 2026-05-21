@@ -5,6 +5,7 @@
 #include "tg_ops.h"
 #include "tg_train.h"
 #include "tg_gpt.h"
+#include "tg_rng.h"
 
 #define MAX_VOCAB 256
 
@@ -104,7 +105,7 @@ static void generate(TgGPT *g, const Vocab *v, const int *seed, int steps) {
 }
 
 int main(void) {
-    srand(42);
+    tg_seed_from_entropy();
 
     int text_len;
     char *text        = read_file("candide.txt", &text_len);
