@@ -123,6 +123,48 @@ static void test_transpose_grad_accum(void) {
     tg_free(A);
 }
 
+static void test_clip_grad_norm(void) {
+    Tensor *a = tg_new(1, 2);
+    Tensor *b = tg_new(1, 1);
+    a->grad[0] = 3.0f;
+    a->grad[1] = 4.0f;
+    b->grad[0] = 0.0f;
+
+    Tensor *params[2] = {a, b};
+    float norm = tg_clip_grad_norm(params, 2, 10.0f, 1e-6f);
+    OVG_CHECK_NEAR(norm, 5.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[0], 3.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[1], 4.0f, 1e-5f);
+
+    norm = tg_clip_grad_norm(params, 2, 2.5f, 1e-6f);
+    OVG_CHECK_NEAR(norm, 5.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[0], 1.5f, 1e-4f);
+    OVG_CHECK_NEAR(a->grad[1], 2.0f, 1e-4f);
+
+    tg_free(a);
+    tg_free(b);
+}
+
+#ifdef OVG_CUDA_ENABLED
+static void test_cuda_clip_grad_norm(void) {
+    Tensor *a = tg_new(1, 2);
+    a->grad[0] = 6.0f;
+    a->grad[1] = 8.0f;
+    tg_to_cuda(a);
+
+    Tensor *params[1] = {a};
+    float norm = tg_clip_grad_norm(params, 1, 5.0f, 1e-6f);
+    tg_from_cuda(a);
+
+    OVG_CHECK_NEAR(norm, 10.0f, 1e-4f);
+    OVG_CHECK_NEAR(a->grad[0], 3.0f, 1e-4f);
+    OVG_CHECK_NEAR(a->grad[1], 4.0f, 1e-4f);
+
+    tg_cuda_free(a);
+    tg_free(a);
+}
+#endif
+
 /* ── Suite entry point ───────────────────────────────────────────────────── */
 
 void run_train_tests(int *passed, int *failed) {
@@ -130,4 +172,8 @@ void run_train_tests(int *passed, int *failed) {
     RUN_TEST(test_backward_zeros_grads, passed, failed);
     RUN_TEST(test_backward_accum,       passed, failed);
     RUN_TEST(test_transpose_grad_accum, passed, failed);
+    RUN_TEST(test_clip_grad_norm,       passed, failed);
+#ifdef OVG_CUDA_ENABLED
+    RUN_TEST(test_cuda_clip_grad_norm,  passed, failed);
+#endif
 }

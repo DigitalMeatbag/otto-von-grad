@@ -64,6 +64,69 @@ void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
     }
 }
 
+float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps) {
+    if (!params || n_params < 0 || max_norm <= 0.0f || eps < 0.0f)
+        ovg_fatal("tg_clip_grad_norm: invalid arguments");
+
+    float sumsq = 0.0f;
+#ifdef OVG_CUDA_ENABLED
+    int any_gpu = 0, any_cpu = 0;
+    float *gpu_sumsq = NULL;
+    for (int p = 0; p < n_params; p++) {
+        if (params[p]->on_cuda) any_gpu = 1;
+        else any_cpu = 1;
+    }
+    if (any_gpu && any_cpu)
+        ovg_fatal("tg_clip_grad_norm: mixed CUDA/CPU params");
+    if (any_gpu) {
+        gpu_sumsq = tg_cuda_malloc_floats(1);
+        tg_cuda_zero_float(gpu_sumsq);
+        for (int p = 0; p < n_params; p++) {
+            Tensor *t = params[p];
+            cuda_grad_sumsq(t->cuda_grad, gpu_sumsq, t->rows * t->cols);
+        }
+        sumsq = tg_cuda_read_float(gpu_sumsq);
+    } else {
+#endif
+    for (int p = 0; p < n_params; p++) {
+        Tensor *t = params[p];
+        int n = t->rows * t->cols;
+        for (int i = 0; i < n; i++)
+            sumsq += t->grad[i] * t->grad[i];
+    }
+#ifdef OVG_CUDA_ENABLED
+    }
+#endif
+
+    float norm = sqrtf(sumsq);
+    if (norm > max_norm) {
+        float scale = max_norm / (norm + eps);
+#ifdef OVG_CUDA_ENABLED
+        if (gpu_sumsq) {
+            for (int p = 0; p < n_params; p++) {
+                Tensor *t = params[p];
+                cuda_scale_grad(t->cuda_grad, scale, t->rows * t->cols);
+            }
+        } else {
+#endif
+        for (int p = 0; p < n_params; p++) {
+            Tensor *t = params[p];
+            int n = t->rows * t->cols;
+            for (int i = 0; i < n; i++)
+                t->grad[i] *= scale;
+        }
+#ifdef OVG_CUDA_ENABLED
+        }
+#endif
+    }
+
+#ifdef OVG_CUDA_ENABLED
+    if (gpu_sumsq)
+        tg_cuda_free_floats(gpu_sumsq);
+#endif
+    return norm;
+}
+
 #ifdef OVG_CUDA_ENABLED
 void tg_adam_step_gpu(Tensor **params, float **m_gpu, float **v_gpu, int n_params,
                       float lr, int step, float beta1, float beta2, float eps) {

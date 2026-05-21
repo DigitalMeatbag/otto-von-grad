@@ -12,7 +12,11 @@ Reverse-mode autograd engine and neural-network infrastructure, written from scr
 Tensor *tg_new(int rows, int cols);
 void    tg_free(Tensor *t);
 void    tg_fill(Tensor *t, float val);
+void    tg_fill_uniform(Tensor *t, float lo, float hi);
 void    tg_fill_randn(Tensor *t, float scale);
+void    tg_fill_xavier_uniform(Tensor *t);
+void    tg_fill_xavier_normal(Tensor *t);
+float   tg_scalar_value(Tensor *t);
 void    tg_print(const Tensor *t, const char *name);
 ```
 
@@ -34,6 +38,7 @@ All ops return a new `Tensor*` that participates in the computation graph.
 | `tg_transpose(a)` | [r,c] → [c,r] | |
 | `tg_tanh(a)` | same → same | |
 | `tg_relu(a)` | same → same | |
+| `tg_gelu(a)` | same → same | tanh-approx GELU |
 | `tg_sum(a)` | any → [1,1] | all elements |
 | `tg_mean(a)` | any → [1,1] | all elements |
 | `tg_mean_rows(a)` | [R,C] → [1,C] | column-wise mean |
@@ -42,8 +47,12 @@ All ops return a new `Tensor*` that participates in the computation graph.
 | `tg_embed(weight, ids, T)` | [V,C], int[T] → [T,C] | gather rows by token id |
 | `tg_causal_mask(scores)` | [T,T] → [T,T] | -1e9 on future positions |
 | `tg_layer_norm_rows(a, eps)` | same → same | row-wise normalization |
+| `tg_layer_norm_rows_affine(a, gamma, beta, eps)` | [R,C],[1,C],[1,C] → [R,C] | row-wise normalization with learned scale/bias |
 | `tg_softmax_rows(a)` | same → same | row-wise softmax |
 | `tg_cross_entropy(logits, targets)` | [T,V],[T,V] → [1,1] | mean CE, targets one-hot |
+| `tg_cross_entropy_no_sync(logits, targets)` | [T,V],[T,V] → [1,1] | CUDA path skips scalar host sync |
+| `tg_cross_entropy_sparse(logits, ids, n, smooth)` | [T,V], int[T] → [1,1] | mean CE with integer labels |
+| `tg_cross_entropy_sparse_no_sync(logits, ids, n, smooth)` | [T,V], int[T] → [1,1] | sparse CE, CUDA path skips scalar host sync |
 | `tg_dropout(a, p)` | same → same | inverted dropout; no-op when `tg_training == 0` or `p == 0` |
 
 ### Training (`tg_train.h`)
@@ -57,6 +66,7 @@ void tg_zero_grads(Tensor **params, int n);           // zero grad arrays for a 
 void tg_sgd_step(Tensor **params, int n, float lr);  // in-place SGD
 void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
                   float lr, int step, float beta1, float beta2, float eps);  // bias-corrected Adam
+float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps);
 void tg_free_graph(Tensor *root);        // free all non-persistent nodes in graph
 ```
 
@@ -139,10 +149,10 @@ CMake produces three targets:
 
 ```powershell
 cmake --build build
-.\build\otto_von_grad_tests.exe   # 23 tests; exits 0 on all-pass
+.\build\otto_von_grad_tests.exe   # exits 0 on all-pass
 
 # Or via CTest
-ctest --test-dir build
+ctest -C Debug --test-dir build     # use -C for Visual Studio multi-config builds
 ```
 
 See [`tests/README.md`](tests/README.md) for details on the test structure.

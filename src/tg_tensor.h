@@ -29,7 +29,11 @@ struct Tensor {
 Tensor *tg_new(int rows, int cols);
 void    tg_free(Tensor *t);
 void    tg_fill(Tensor *t, float val);
+void    tg_fill_uniform(Tensor *t, float lo, float hi);
 void    tg_fill_randn(Tensor *t, float scale);
+void    tg_fill_xavier_uniform(Tensor *t);
+void    tg_fill_xavier_normal(Tensor *t);
+float   tg_scalar_value(Tensor *t);
 void    tg_print(const Tensor *t, const char *name);
 void    tg_print_grad(const Tensor *t, const char *name);
 

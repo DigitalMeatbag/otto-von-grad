@@ -237,6 +237,29 @@ __global__ void tanh_bwd_k(const float *out, const float *g, float *da, int n) {
     if (i < n) { float t = out[i]; atomicAdd(&da[i], (1.0f - t * t) * g[i]); }
 }
 
+__device__ float gelu_grad_d(float x) {
+    const float k = 0.7978845608028654f;
+    const float c = 0.044715f;
+    float x2 = x * x;
+    float u = k * (x + c * x * x2);
+    float t = tanhf(u);
+    float du = k * (1.0f + 3.0f * c * x2);
+    return 0.5f * (1.0f + t) + 0.5f * x * (1.0f - t * t) * du;
+}
+
+__global__ void gelu_fwd_k(const float *a, float *o, int n) {
+    int i = blockIdx.x * BLOCK + threadIdx.x;
+    if (i >= n) return;
+    const float k = 0.7978845608028654f;
+    const float c = 0.044715f;
+    float x = a[i];
+    o[i] = 0.5f * x * (1.0f + tanhf(k * (x + c * x * x * x)));
+}
+__global__ void gelu_bwd_k(const float *a, const float *g, float *da, int n) {
+    int i = blockIdx.x * BLOCK + threadIdx.x;
+    if (i < n) atomicAdd(&da[i], gelu_grad_d(a[i]) * g[i]);
+}
+
 // ── Host launchers — element-wise ────────────────────────────────────────────
 
 static int blocks(int n) { return (n + BLOCK - 1) / BLOCK; }
@@ -276,6 +299,11 @@ void cuda_tanh_fwd(const float *a, float *o, int n)
     { tanh_fwd_k<<<blocks(n),BLOCK>>>(a,o,n); }
 void cuda_tanh_bwd(const float *out, const float *g, float *da, int n)
     { tanh_bwd_k<<<blocks(n),BLOCK>>>(out,g,da,n); }
+
+void cuda_gelu_fwd(const float *a, float *out, int n)
+    { gelu_fwd_k<<<blocks(n),BLOCK>>>(a,out,n); }
+void cuda_gelu_bwd(const float *a, const float *g, float *da, int n)
+    { gelu_bwd_k<<<blocks(n),BLOCK>>>(a,g,da,n); }
 
 // ── Transpose ────────────────────────────────────────────────────────────────
 
@@ -490,6 +518,96 @@ __global__ void layer_norm_rows_bwd_k(const float *y, const float *dy,
         atomicAdd(&dxr[j], is * (dyr[j] - mean_dy - yr[j] * mean_dy_y));
 }
 
+__global__ void layer_norm_rows_affine_fwd_k(const float *a, const float *gamma,
+                                              const float *beta, float eps,
+                                              float *out, float *cache,
+                                              int rows, int cols) {
+    int row = blockIdx.x;
+    if (row >= rows) return;
+    const float *xr = a + row * cols;
+    float *yr = out + row * cols;
+    float *inv_std = cache;
+    float *xhat = cache + rows + row * cols;
+
+    __shared__ float smem[BLOCK];
+
+    float mean = 0.0f;
+    for (int j = threadIdx.x; j < cols; j += BLOCK) mean += xr[j];
+    smem[threadIdx.x] = mean;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
+        __syncthreads();
+    }
+    mean = smem[0] / (float)cols;
+
+    float var = 0.0f;
+    for (int j = threadIdx.x; j < cols; j += BLOCK) {
+        float c = xr[j] - mean;
+        var += c * c;
+    }
+    smem[threadIdx.x] = var;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
+        __syncthreads();
+    }
+    float is = 1.0f / sqrtf(smem[0] / (float)cols + eps);
+    if (threadIdx.x == 0) inv_std[row] = is;
+
+    for (int j = threadIdx.x; j < cols; j += BLOCK) {
+        float norm = (xr[j] - mean) * is;
+        xhat[j] = norm;
+        yr[j] = norm * gamma[j] + beta[j];
+    }
+}
+
+__global__ void layer_norm_rows_affine_bwd_k(const float *xhat, const float *dy,
+                                              const float *gamma,
+                                              const float *inv_std, float *dx,
+                                              float *dgamma, float *dbeta,
+                                              int rows, int cols) {
+    int row = blockIdx.x;
+    if (row >= rows) return;
+    const float *xhr = xhat + row * cols;
+    const float *dyr = dy + row * cols;
+    float *dxr = dx + row * cols;
+    float is = inv_std[row];
+    float invC = 1.0f / (float)cols;
+
+    __shared__ float smem[BLOCK];
+
+    float mean_dxhat = 0.0f;
+    for (int j = threadIdx.x; j < cols; j += BLOCK)
+        mean_dxhat += dyr[j] * gamma[j];
+    smem[threadIdx.x] = mean_dxhat;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
+        __syncthreads();
+    }
+    mean_dxhat = smem[0] * invC;
+
+    float mean_dxhat_xhat = 0.0f;
+    for (int j = threadIdx.x; j < cols; j += BLOCK)
+        mean_dxhat_xhat += dyr[j] * gamma[j] * xhr[j];
+    smem[threadIdx.x] = mean_dxhat_xhat;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
+        __syncthreads();
+    }
+    mean_dxhat_xhat = smem[0] * invC;
+
+    for (int j = threadIdx.x; j < cols; j += BLOCK) {
+        float g = dyr[j];
+        float dxhat = g * gamma[j];
+        atomicAdd(&dgamma[j], g * xhr[j]);
+        atomicAdd(&dbeta[j], g);
+        atomicAdd(&dxr[j], is * (dxhat - mean_dxhat - xhr[j] * mean_dxhat_xhat));
+    }
+}
+
 void cuda_softmax_rows_fwd(const float *a, float *out, int rows, int cols)
     { softmax_rows_fwd_k<<<rows,BLOCK>>>(a, out, rows, cols); }
 void cuda_softmax_rows_bwd(const float *out_data, const float *g, float *da,
@@ -502,6 +620,16 @@ void cuda_layer_norm_rows_fwd(const float *a, float eps, float *out,
 void cuda_layer_norm_rows_bwd(const float *y, const float *dy,
                                const float *inv_std, float *dx, int rows, int cols)
     { layer_norm_rows_bwd_k<<<rows,BLOCK>>>(y, dy, inv_std, dx, rows, cols); }
+
+void cuda_layer_norm_rows_affine_fwd(const float *a, const float *gamma, const float *beta,
+                                      float eps, float *out, float *cache,
+                                      int rows, int cols)
+    { layer_norm_rows_affine_fwd_k<<<rows,BLOCK>>>(a, gamma, beta, eps, out, cache, rows, cols); }
+void cuda_layer_norm_rows_affine_bwd(const float *xhat, const float *dy,
+                                      const float *gamma, const float *inv_std,
+                                      float *dx, float *dgamma, float *dbeta,
+                                      int rows, int cols)
+    { layer_norm_rows_affine_bwd_k<<<rows,BLOCK>>>(xhat, dy, gamma, inv_std, dx, dgamma, dbeta, rows, cols); }
 
 // ── Special ops ───────────────────────────────────────────────────────────────
 
@@ -650,6 +778,80 @@ void cuda_cross_entropy_bwd(const float *probs, const float *targets,
     cross_entropy_bwd_k<<<blocks(n),BLOCK>>>(probs, targets, g, d_logits, rows, cols);
 }
 
+__global__ void cross_entropy_sparse_fwd_k(const float *logits, const float *ids,
+                                            float smoothing, float *probs,
+                                            float *loss_acc, int rows, int cols) {
+    int row = blockIdx.x;
+    if (row >= rows) return;
+    const float *row_in = logits + row * cols;
+    float *row_prb = probs + row * cols;
+    int id = (int)ids[row];
+    float off = cols > 1 ? smoothing / (float)(cols - 1) : 0.0f;
+
+    __shared__ float smem[BLOCK];
+
+    float mx = -1e38f;
+    for (int j = threadIdx.x; j < cols; j += BLOCK) mx = fmaxf(mx, row_in[j]);
+    smem[threadIdx.x] = mx;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] = fmaxf(smem[threadIdx.x], smem[threadIdx.x+s]);
+        __syncthreads();
+    }
+    mx = smem[0];
+
+    float sum = 0.0f;
+    for (int j = threadIdx.x; j < cols; j += BLOCK) {
+        float e = expf(row_in[j] - mx);
+        row_prb[j] = e;
+        sum += e;
+    }
+    smem[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
+        __syncthreads();
+    }
+    sum = smem[0];
+    float log_sum_exp = logf(sum) + mx;
+    for (int j = threadIdx.x; j < cols; j += BLOCK) row_prb[j] /= sum;
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        float loss = 0.0f;
+        for (int j = 0; j < cols; j++) {
+            float target = (j == id) ? (1.0f - smoothing) : off;
+            loss -= target * (row_in[j] - log_sum_exp);
+        }
+        atomicAdd(loss_acc, loss / (float)rows);
+    }
+}
+
+__global__ void cross_entropy_sparse_bwd_k(const float *probs, const float *ids,
+                                            const float *g, float smoothing,
+                                            float *d_logits, int rows, int cols) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= rows * cols) return;
+    int row = idx / cols;
+    int col = idx % cols;
+    int id = (int)ids[row];
+    float off = cols > 1 ? smoothing / (float)(cols - 1) : 0.0f;
+    float target = (col == id) ? (1.0f - smoothing) : off;
+    float scale = g[0] / (float)rows;
+    atomicAdd(&d_logits[idx], scale * (probs[idx] - target));
+}
+
+void cuda_cross_entropy_sparse_fwd(const float *logits, const float *ids,
+                                   float smoothing, float *probs, float *loss_out,
+                                   int rows, int cols) {
+    cross_entropy_sparse_fwd_k<<<rows,BLOCK>>>(logits, ids, smoothing, probs, loss_out, rows, cols);
+}
+void cuda_cross_entropy_sparse_bwd(const float *probs, const float *ids,
+                                   const float *g, float smoothing, float *d_logits,
+                                   int rows, int cols) {
+    cross_entropy_sparse_bwd_k<<<blocks(rows * cols),BLOCK>>>(probs, ids, g, smoothing, d_logits, rows, cols);
+}
+
 // embed: weight[V×C], ids[T] (float-encoded ints) → out[T×C]
 __global__ void embed_fwd_k(const float *weight, const float *ids, float *out, int T, int C) {
     int idx = blockIdx.x * BLOCK + threadIdx.x;
@@ -706,5 +908,28 @@ void cuda_adam_step(float *param, float *m, float *v, const float *grad,
                     float beta1, float beta2, float eps) {
     adam_step_k<<<blocks(n),BLOCK>>>(param, m, v, grad, n, lr, bc1, bc2, beta1, beta2, eps);
 }
+
+__global__ void grad_sumsq_k(const float *grad, float *sum_out, int n) {
+    __shared__ float smem[BLOCK];
+    int i = blockIdx.x * BLOCK + threadIdx.x;
+    float v = (i < n) ? grad[i] : 0.0f;
+    smem[threadIdx.x] = v * v;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) atomicAdd(sum_out, smem[0]);
+}
+
+__global__ void scale_grad_k(float *grad, float scale, int n) {
+    int i = blockIdx.x * BLOCK + threadIdx.x;
+    if (i < n) grad[i] *= scale;
+}
+
+void cuda_grad_sumsq(const float *grad, float *sum_out, int n)
+    { grad_sumsq_k<<<blocks(n),BLOCK>>>(grad, sum_out, n); }
+void cuda_scale_grad(float *grad, float scale, int n)
+    { scale_grad_k<<<blocks(n),BLOCK>>>(grad, scale, n); }
 
 #endif // OVG_CUDA_ENABLED

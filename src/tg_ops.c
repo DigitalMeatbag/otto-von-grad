@@ -30,6 +30,23 @@ static Tensor *make_op(int rows, int cols, Tensor *p0, Tensor *p1, TgBackwardFn 
     return out;
 }
 
+static float gelu_value(float x) {
+    const float k = 0.7978845608028654f;
+    const float c = 0.044715f;
+    float x3 = x * x * x;
+    return 0.5f * x * (1.0f + tanhf(k * (x + c * x3)));
+}
+
+static float gelu_grad(float x) {
+    const float k = 0.7978845608028654f;
+    const float c = 0.044715f;
+    float x2 = x * x;
+    float u = k * (x + c * x * x2);
+    float t = tanhf(u);
+    float du = k * (1.0f + 3.0f * c * x2);
+    return 0.5f * (1.0f + t) + 0.5f * x * (1.0f - t * t) * du;
+}
+
 // ── Backward functions ────────────────────────────────────────────────────────
 
 static void backward_add(Tensor *self) {
@@ -138,6 +155,16 @@ static void backward_relu(Tensor *self) {
         a->grad[i] += self->grad[i] * (a->data[i] > 0.0f ? 1.0f : 0.0f);
 }
 
+static void backward_gelu(Tensor *self) {
+    Tensor *a = self->parents[0];
+    int n = self->rows * self->cols;
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) { cuda_gelu_bwd(a->cuda_data, self->cuda_grad, a->cuda_grad, n); return; }
+#endif
+    for (int i = 0; i < n; i++)
+        a->grad[i] += gelu_grad(a->data[i]) * self->grad[i];
+}
+
 static void backward_sum(Tensor *self) {
     Tensor *a = self->parents[0];
     int n = a->rows * a->cols;
@@ -228,6 +255,49 @@ static void backward_layer_norm_rows(Tensor *self) {
     }
 }
 
+static void backward_layer_norm_rows_affine(Tensor *self) {
+    Tensor *a     = self->parents[0];
+    Tensor *gamma = self->parents[1];
+    Tensor *beta  = self->parents[2];
+    int rows = self->rows, cols = self->cols;
+
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) {
+        cuda_layer_norm_rows_affine_bwd(self->cuda_cache + rows, self->cuda_grad,
+                                        gamma->cuda_data, self->cuda_cache,
+                                        a->cuda_grad, gamma->cuda_grad, beta->cuda_grad,
+                                        rows, cols);
+        return;
+    }
+#endif
+
+    float *inv_std = self->cache;
+    float *xhat = self->cache + rows;
+    for (int r = 0; r < rows; r++) {
+        float *dy = self->grad + r * cols;
+        float *dx = a->grad    + r * cols;
+        float *xh = xhat       + r * cols;
+
+        float mean_dxhat = 0.0f;
+        float mean_dxhat_xhat = 0.0f;
+        for (int j = 0; j < cols; j++) {
+            float g = dy[j];
+            gamma->grad[j] += g * xh[j];
+            beta->grad[j]  += g;
+            float dxhat = g * gamma->data[j];
+            mean_dxhat += dxhat;
+            mean_dxhat_xhat += dxhat * xh[j];
+        }
+        mean_dxhat /= (float)cols;
+        mean_dxhat_xhat /= (float)cols;
+
+        for (int j = 0; j < cols; j++) {
+            float dxhat = dy[j] * gamma->data[j];
+            dx[j] += inv_std[r] * (dxhat - mean_dxhat - xh[j] * mean_dxhat_xhat);
+        }
+    }
+}
+
 static void backward_softmax_rows(Tensor *self) {
     Tensor *a = self->parents[0];
     int rows = self->rows, cols = self->cols;
@@ -262,6 +332,31 @@ static void backward_cross_entropy(Tensor *self) {
     float scale = self->grad[0] / (float)rows;
     for (int i = 0; i < rows * cols; i++)
         logits->grad[i] += scale * (probs[i] - targets->data[i]);
+}
+
+static void backward_cross_entropy_sparse(Tensor *self) {
+    Tensor *logits = self->parents[0];
+    int rows = logits->rows, cols = logits->cols;
+    float smoothing = self->aux;
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) {
+        cuda_cross_entropy_sparse_bwd(self->cuda_cache, self->cuda_cache + rows * cols,
+                                      self->cuda_grad, smoothing, logits->cuda_grad,
+                                      rows, cols);
+        return;
+    }
+#endif
+    float *probs = self->cache;
+    float *ids = self->cache + rows * cols;
+    float scale = self->grad[0] / (float)rows;
+    float off = cols > 1 ? smoothing / (float)(cols - 1) : 0.0f;
+    for (int r = 0; r < rows; r++) {
+        int id = (int)ids[r];
+        for (int j = 0; j < cols; j++) {
+            float target = (j == id) ? (1.0f - smoothing) : off;
+            logits->grad[r * cols + j] += scale * (probs[r * cols + j] - target);
+        }
+    }
 }
 
 static void backward_slice_cols(Tensor *self) {
@@ -431,6 +526,16 @@ Tensor *tg_relu(Tensor *a) {
     return out;
 }
 
+Tensor *tg_gelu(Tensor *a) {
+    Tensor *out = make_op(a->rows, a->cols, a, NULL, backward_gelu);
+    int n = a->rows * a->cols;
+#ifdef OVG_CUDA_ENABLED
+    if (out->on_cuda) { cuda_gelu_fwd(a->cuda_data, out->cuda_data, n); return out; }
+#endif
+    for (int i = 0; i < n; i++) out->data[i] = gelu_value(a->data[i]);
+    return out;
+}
+
 Tensor *tg_sum(Tensor *a) {
     Tensor *out = make_op(1, 1, a, NULL, backward_sum);
 #ifdef OVG_CUDA_ENABLED
@@ -540,6 +645,61 @@ Tensor *tg_layer_norm_rows(Tensor *a, float eps) {
     return out;
 }
 
+Tensor *tg_layer_norm_rows_affine(Tensor *a, Tensor *gamma, Tensor *beta, float eps) {
+    if (!a || !gamma || !beta)
+        ovg_fatal("tg_layer_norm_rows_affine: NULL argument");
+    if (gamma->rows != 1 || gamma->cols != a->cols ||
+        beta->rows != 1 || beta->cols != a->cols)
+        ovg_fatal("tg_layer_norm_rows_affine: expected gamma/beta [1x%d], got [%dx%d] and [%dx%d]",
+                  a->cols, gamma->rows, gamma->cols, beta->rows, beta->cols);
+#ifdef OVG_CUDA_ENABLED
+    if (a->on_cuda != gamma->on_cuda || a->on_cuda != beta->on_cuda)
+        ovg_fatal("tg_layer_norm_rows_affine: mixed CUDA/CPU parents");
+#endif
+
+    int rows = a->rows, cols = a->cols;
+    Tensor *out = tg_new(rows, cols);
+    out->parents[0] = a;
+    out->parents[1] = gamma;
+    out->parents[2] = beta;
+    out->n_parents = 3;
+    out->backward_fn = backward_layer_norm_rows_affine;
+    out->aux = eps;
+
+#ifdef OVG_CUDA_ENABLED
+    if (a->on_cuda) {
+        tg_cuda_alloc(out);
+        tg_cuda_alloc_cache(out, rows + rows * cols);
+        cuda_layer_norm_rows_affine_fwd(a->cuda_data, gamma->cuda_data, beta->cuda_data,
+                                        eps, out->cuda_data, out->cuda_cache,
+                                        rows, cols);
+        return out;
+    }
+#endif
+
+    out->cache = malloc((size_t)(rows + rows * cols) * sizeof(float));
+    if (!out->cache) ovg_fatal("tg_layer_norm_rows_affine: out of memory");
+    float *inv_std = out->cache;
+    float *xhat = out->cache + rows;
+
+    for (int r = 0; r < rows; r++) {
+        float *x = a->data + r * cols;
+        float sum = 0.0f, sum2 = 0.0f;
+        for (int j = 0; j < cols; j++) { sum += x[j]; sum2 += x[j] * x[j]; }
+        float mean = sum / (float)cols;
+        float var = sum2 / (float)cols - mean * mean;
+        float is = 1.0f / sqrtf(var + eps);
+        inv_std[r] = is;
+
+        for (int j = 0; j < cols; j++) {
+            float norm = (x[j] - mean) * is;
+            xhat[r * cols + j] = norm;
+            out->data[r * cols + j] = norm * gamma->data[j] + beta->data[j];
+        }
+    }
+    return out;
+}
+
 Tensor *tg_softmax_rows(Tensor *a) {
     int rows = a->rows, cols = a->cols;
     Tensor *out = make_op(rows, cols, a, NULL, backward_softmax_rows);
@@ -558,7 +718,7 @@ Tensor *tg_softmax_rows(Tensor *a) {
     return out;
 }
 
-Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
+static Tensor *cross_entropy_dense_impl(Tensor *logits, Tensor *targets, int sync_scalar) {
     if (logits->rows != targets->rows || logits->cols != targets->cols)
         ovg_fatal("tg_cross_entropy: shape mismatch [%dx%d] vs [%dx%d]",
                   logits->rows, logits->cols, targets->rows, targets->cols);
@@ -570,8 +730,8 @@ Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
         tg_cuda_alloc_cache(out, rows * cols);   // probs: R×C floats
         cuda_cross_entropy_fwd(logits->cuda_data, targets->cuda_data,
                                out->cuda_cache, out->cuda_data, rows, cols);
-// Copy scalar loss to CPU so the training loop can print it
-        tg_from_cuda(out);   // sync scalar loss to host for printing; on_cuda stays 1 so backward uses cuda_cache
+        if (sync_scalar)
+            tg_from_cuda(out);
         return out;
     }
 #endif
@@ -597,6 +757,98 @@ Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
     }
     out->data[0] = loss / (float)rows;
     return out;
+}
+
+Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
+    return cross_entropy_dense_impl(logits, targets, 1);
+}
+
+Tensor *tg_cross_entropy_no_sync(Tensor *logits, Tensor *targets) {
+    return cross_entropy_dense_impl(logits, targets, 0);
+}
+
+static Tensor *cross_entropy_sparse_impl(Tensor *logits, const int *class_ids,
+                                         int n_ids, float label_smoothing,
+                                         int sync_scalar) {
+    if (!logits || !class_ids)
+        ovg_fatal("tg_cross_entropy_sparse: NULL argument");
+    if (n_ids != logits->rows)
+        ovg_fatal("tg_cross_entropy_sparse: n_ids=%d, expected rows=%d", n_ids, logits->rows);
+    if (label_smoothing < 0.0f || label_smoothing >= 1.0f)
+        ovg_fatal("tg_cross_entropy_sparse: label_smoothing %.6f out of range [0,1)",
+                  label_smoothing);
+    int rows = logits->rows, cols = logits->cols;
+    if (cols < 2 && label_smoothing > 0.0f)
+        ovg_fatal("tg_cross_entropy_sparse: smoothing requires at least 2 classes");
+    for (int r = 0; r < rows; r++) {
+        if (class_ids[r] < 0 || class_ids[r] >= cols)
+            ovg_fatal("tg_cross_entropy_sparse: class id %d out of range [0, %d)",
+                      class_ids[r], cols);
+    }
+
+    Tensor *out = make_op(1, 1, logits, NULL, backward_cross_entropy_sparse);
+    out->aux = label_smoothing;
+
+    float *ids = malloc((size_t)rows * sizeof(float));
+    if (!ids) ovg_fatal("tg_cross_entropy_sparse: out of memory");
+    for (int r = 0; r < rows; r++) ids[r] = (float)class_ids[r];
+
+#ifdef OVG_CUDA_ENABLED
+    if (out->on_cuda) {
+        float *host_cache = calloc((size_t)(rows * cols + rows), sizeof(float));
+        if (!host_cache) ovg_fatal("tg_cross_entropy_sparse: out of memory");
+        for (int r = 0; r < rows; r++)
+            host_cache[rows * cols + r] = ids[r];
+        tg_cuda_alloc_cache(out, rows * cols + rows);
+        tg_cuda_upload_cache(out, host_cache, rows * cols + rows);
+        cuda_cross_entropy_sparse_fwd(logits->cuda_data, out->cuda_cache + rows * cols,
+                                      label_smoothing, out->cuda_cache,
+                                      out->cuda_data, rows, cols);
+        free(host_cache);
+        free(ids);
+        if (sync_scalar)
+            tg_from_cuda(out);
+        return out;
+    }
+#endif
+
+    out->cache = malloc((size_t)(rows * cols + rows) * sizeof(float));
+    if (!out->cache) ovg_fatal("tg_cross_entropy_sparse: out of memory");
+    float *probs = out->cache;
+    float *cache_ids = out->cache + rows * cols;
+    for (int r = 0; r < rows; r++) cache_ids[r] = ids[r];
+    free(ids);
+
+    float loss = 0.0f;
+    float off = cols > 1 ? label_smoothing / (float)(cols - 1) : 0.0f;
+    for (int r = 0; r < rows; r++) {
+        float *row = logits->data + r * cols;
+        float *prob = probs + r * cols;
+        int id = class_ids[r];
+        float mx = row[0];
+        for (int j = 1; j < cols; j++) if (row[j] > mx) mx = row[j];
+        float sum = 0.0f;
+        for (int j = 0; j < cols; j++) { prob[j] = expf(row[j] - mx); sum += prob[j]; }
+        float log_sum_exp = logf(sum) + mx;
+        float inv_sum = 1.0f / sum;
+        for (int j = 0; j < cols; j++) {
+            prob[j] *= inv_sum;
+            float target = (j == id) ? (1.0f - label_smoothing) : off;
+            loss -= target * (row[j] - log_sum_exp);
+        }
+    }
+    out->data[0] = loss / (float)rows;
+    return out;
+}
+
+Tensor *tg_cross_entropy_sparse(Tensor *logits, const int *class_ids,
+                                int n_ids, float label_smoothing) {
+    return cross_entropy_sparse_impl(logits, class_ids, n_ids, label_smoothing, 1);
+}
+
+Tensor *tg_cross_entropy_sparse_no_sync(Tensor *logits, const int *class_ids,
+                                        int n_ids, float label_smoothing) {
+    return cross_entropy_sparse_impl(logits, class_ids, n_ids, label_smoothing, 0);
 }
 
 Tensor *tg_slice_cols(Tensor *a, int col_start, int col_end) {
