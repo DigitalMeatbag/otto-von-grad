@@ -180,6 +180,24 @@ ovg_set_fatal_handler(my_handler);
 
 ---
 
+## RNG and Seeding (`tg_rng.h`)
+
+```c
+void tg_seed(uint32_t seed);       // seed rand() + dropout xorshift32, log seed to stdout
+void tg_seed_from_entropy(void);   // seed from OS entropy (rand_s / arc4random / /dev/urandom)
+```
+
+Call `tg_seed_from_entropy()` once at startup (already done in `main.c`). The chosen seed
+is printed so any run can be reproduced:
+
+```
+[ovg] rng seed: 0x5f3759df
+```
+
+To replay that run, replace the call with `tg_seed(0x5f3759df)`.
+
+---
+
 ## Usage as a Dependency
 
 `otto-von-grad` is designed to be consumed as a CMake static library. The `ottovongrad`

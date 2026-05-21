@@ -64,6 +64,7 @@ All ops in `tg_ops.c / tg_ops.h`. Tensor struct and lifecycle in `tg_tensor.h`.
 
 * `tg_tanh(a)`
 * `tg_relu(a)`
+* `tg_gelu(a)`
 
 ### Reductions
 
@@ -200,7 +201,7 @@ VS 2026 (MSVC 14.50+) requires `-allow-unsupported-compiler` — already set in 
 cmake -B build -G Ninja
 cmake --build build
 .\build\otto_von_grad.exe           # GPT demo (trains on candide.txt)
-.\build\otto_von_grad_tests.exe     # test suite — 23 tests, exits 0 on all-pass
+.\build\otto_von_grad_tests.exe     # test suite — exits 0 on all-pass
 
 # With CUDA
 cmake -B build -G Ninja -DOVG_CUDA=ON
@@ -209,6 +210,30 @@ cmake --build build
 ```
 
 On VS 2026 the configure step handles the unsupported-compiler flag automatically.
+
+---
+
+## RNG and Seeding
+
+File: `tg_rng.c / tg_rng.h`
+
+```c
+void     tg_seed(uint32_t seed);       // seed rand() + xorshift32, log seed to stdout
+void     tg_seed_from_entropy(void);   // seed from OS entropy, then call tg_seed()
+uint32_t tg_rng_xorshift32(void);      // xorshift32 step (used internally by tg_dropout)
+```
+
+`tg_seed_from_entropy()` picks the right source per platform (`rand_s` on Windows,
+`arc4random` on Apple, `/dev/urandom` on Linux). The chosen seed is always logged:
+
+```
+[ovg] rng seed: 0x5f3759df
+```
+
+To reproduce a run, replace `tg_seed_from_entropy()` with `tg_seed(0x5f3759df)`.
+
+Note: `rand()` is process-global. For exact replay, `tg_seed()` must be the only
+`srand()` call in the process and must occur before any RNG use.
 
 ---
 
