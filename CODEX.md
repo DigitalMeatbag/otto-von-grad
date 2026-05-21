@@ -50,7 +50,8 @@ CPU build:
 ```powershell
 cmake -B build -G Ninja
 cmake --build build
-.\build\otto_von_grad.exe
+.\build\otto_von_grad_tests.exe   # test suite — exits 0 on all-pass
+.\build\otto_von_grad.exe         # GPT character-level demo (candide.txt)
 ```
 
 CUDA build:
@@ -58,15 +59,13 @@ CUDA build:
 ```powershell
 cmake -B build -G Ninja -DOVG_CUDA=ON
 cmake --build build
-.\build\otto_von_grad.exe
+.\build\otto_von_grad_tests.exe
 ```
 
-The standalone executable runs smoke tests at startup before the GPT demo. There
-is no separate test runner in the current repo.
-
-For code changes, at minimum run the CPU build unless the change is docs-only or
-the local toolchain is unavailable. For CUDA-specific changes, attempt the CUDA
-configure/build path and report if the environment cannot support it.
+For code changes, at minimum run the CPU build and `otto_von_grad_tests.exe` unless
+the change is docs-only or the local toolchain is unavailable. For CUDA-specific
+changes, attempt the CUDA configure/build path and report if the environment cannot
+support it.
 
 ## File Map
 
@@ -84,10 +83,18 @@ configure/build path and report if the environment cannot support it.
   output projection.
 - `src/tg_cuda.cu`, `src/tg_cuda.h`: tensor CUDA upload/download lifecycle.
 - `src/cuda_ops.cu`, `src/cuda_ops.h`: CUDA kernels for tensor ops.
-- `src/value.c`, `src/value.h`, `src/mlp.c`, `src/mlp.h`: historical scalar
-  autograd reference.
-- `src/smoke_tests.c`, `src/smoke_tests.h`: startup smoke tests.
+- `src/ovg_error.c`, `src/ovg_error.h`: centralized fatal error handler (`ovg_fatal`,
+  `ovg_set_fatal_handler`).
+- `src/tg_cuda.cu`, `src/tg_cuda.h`: tensor CUDA upload/download lifecycle.
+- `src/cuda_ops.cu`, `src/cuda_ops.h`: CUDA kernels for tensor ops.
 - `src/main.c`: GPT character-level demo using `candide.txt`.
+- `tests/ovg_test.h`: test assertion macros (`OVG_CHECK`, `OVG_CHECK_NEAR`, etc.).
+- `tests/test_main.c`: test runner entry point.
+- `tests/test_ops.c`: ops forward/backward + error-path tests.
+- `tests/test_train.c`: optimizer and backward pass tests.
+- `tests/test_attention.c`: causal and encoder attention tests.
+- `tests/test_gpt.c`: GPT shape and param collection tests.
+- `legacy/`: historical scalar autograd learning exercises (not compiled).
 
 ## Include Style
 

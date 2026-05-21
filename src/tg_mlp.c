@@ -1,6 +1,6 @@
 #include "tg_mlp.h"
+#include "ovg_error.h"
 #include <stdlib.h>
-#include <stdio.h>
 
 TgLinear tg_linear_create(int n_in, int n_out, int batch, float w_scale) {
     TgLinear l;
@@ -25,7 +25,7 @@ Tensor *tg_linear_forward(TgLinear *l, Tensor *x, Tensor **xw_out) {
 
 Tensor **tg_linear_params(TgLinear *l, int *n_out) {
     Tensor **p = malloc(2 * sizeof(Tensor *));
-    if (!p) { fprintf(stderr, "tg_linear_params: out of memory\n"); exit(1); }
+    if (!p) ovg_fatal("tg_linear_params: out of memory");
     p[0] = l->W;
     p[1] = l->B;
     *n_out = 2;

@@ -1,17 +1,15 @@
 #include "tg_transformer.h"
+#include "ovg_error.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 
 TgTransformer tg_transformer_create(int n_blocks, int embed_dim, int hidden_dim, int seq_len, int n_heads) {
-    if (n_blocks <= 0) {
-        fprintf(stderr, "tg_transformer_create: n_blocks must be positive, got %d\n", n_blocks);
-        exit(1);
-    }
+    if (n_blocks <= 0)
+        ovg_fatal("tg_transformer_create: n_blocks must be positive, got %d", n_blocks);
 
     TgTransformer t;
     t.blocks = calloc((size_t)n_blocks, sizeof(TgBlock));
-    if (!t.blocks) { fprintf(stderr, "tg_transformer_create: out of memory\n"); exit(1); }
+    if (!t.blocks) ovg_fatal("tg_transformer_create: out of memory");
 
     t.n_blocks = n_blocks;
     t.embed_dim = embed_dim;
@@ -24,14 +22,12 @@ TgTransformer tg_transformer_create(int n_blocks, int embed_dim, int hidden_dim,
 }
 
 TgTransformer tg_transformer_create_encoder(int n_blocks, int embed_dim, int hidden_dim, int seq_len, int n_heads) {
-    if (n_blocks <= 0) {
-        fprintf(stderr, "tg_transformer_create_encoder: n_blocks must be positive, got %d\n", n_blocks);
-        exit(1);
-    }
+    if (n_blocks <= 0)
+        ovg_fatal("tg_transformer_create_encoder: n_blocks must be positive, got %d", n_blocks);
 
     TgTransformer t;
     t.blocks = calloc((size_t)n_blocks, sizeof(TgBlock));
-    if (!t.blocks) { fprintf(stderr, "tg_transformer_create_encoder: out of memory\n"); exit(1); }
+    if (!t.blocks) ovg_fatal("tg_transformer_create_encoder: out of memory");
 
     t.n_blocks = n_blocks;
     t.embed_dim = embed_dim;
@@ -57,17 +53,12 @@ void tg_transformer_free(TgTransformer *t) {
 }
 
 Tensor *tg_transformer_forward(TgTransformer *t, Tensor *X) {
-    if (!t || !X) {
-        fprintf(stderr, "tg_transformer_forward: NULL argument\n");
-        exit(1);
-    }
+    if (!t || !X)
+        ovg_fatal("tg_transformer_forward: NULL argument");
 
-    if (X->cols != t->embed_dim) {
-        fprintf(stderr,
-                "tg_transformer_forward: X has shape [%dx%d], expected cols=%d\n",
-                X->rows, X->cols, t->embed_dim);
-        exit(1);
-    }
+    if (X->cols != t->embed_dim)
+        ovg_fatal("tg_transformer_forward: X has shape [%dx%d], expected cols=%d",
+                  X->rows, X->cols, t->embed_dim);
 
     Tensor *Y = X;
     for (int i = 0; i < t->n_blocks; i++)

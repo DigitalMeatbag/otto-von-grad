@@ -1,22 +1,16 @@
 #include "attention.h"
+#include "ovg_error.h"
 
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 TgSelfAttention tg_attention_create(int embed_dim, int n_heads) {
-    if (n_heads <= 0 || embed_dim % n_heads != 0) {
-        fprintf(stderr,
-                "tg_attention_create: embed_dim %d not divisible by n_heads %d\n",
-                embed_dim, n_heads);
-        exit(1);
-    }
-    if (n_heads > TG_MAX_PARENTS) {
-        fprintf(stderr,
-                "tg_attention_create: n_heads %d exceeds TG_MAX_PARENTS=%d\n",
-                n_heads, TG_MAX_PARENTS);
-        exit(1);
-    }
+    if (n_heads <= 0 || embed_dim % n_heads != 0)
+        ovg_fatal("tg_attention_create: embed_dim %d not divisible by n_heads %d",
+                  embed_dim, n_heads);
+    if (n_heads > TG_MAX_PARENTS)
+        ovg_fatal("tg_attention_create: n_heads %d exceeds TG_MAX_PARENTS=%d",
+                  n_heads, TG_MAX_PARENTS);
 
     TgSelfAttention a;
     a.embed_dim = embed_dim;
@@ -68,16 +62,11 @@ TgSelfAttention tg_attention_create_encoder(int embed_dim, int n_heads) {
 }
 
 TgAttentionForward tg_attention_forward_full(TgSelfAttention *a, Tensor *X) {
-    if (!a || !X) {
-        fprintf(stderr, "tg_attention_forward_full: NULL argument\n");
-        exit(1);
-    }
-    if (X->cols != a->embed_dim) {
-        fprintf(stderr,
-                "tg_attention_forward_full: X has shape [%dx%d], expected cols=%d\n",
-                X->rows, X->cols, a->embed_dim);
-        exit(1);
-    }
+    if (!a || !X)
+        ovg_fatal("tg_attention_forward_full: NULL argument");
+    if (X->cols != a->embed_dim)
+        ovg_fatal("tg_attention_forward_full: X has shape [%dx%d], expected cols=%d",
+                  X->rows, X->cols, a->embed_dim);
 
     /*
         Full Q/K/V projections:

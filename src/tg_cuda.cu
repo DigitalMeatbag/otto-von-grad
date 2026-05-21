@@ -2,6 +2,7 @@
 
 #include "tg_cuda.h"
 #include "tg_tensor.h"
+#include "ovg_error.h"
 
 #include <cuda_runtime.h>
 #include <stdio.h>
@@ -10,9 +11,8 @@
 #define CUDA_CHECK(call) do { \
     cudaError_t _e = (call); \
     if (_e != cudaSuccess) { \
-        fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__, \
-                cudaGetErrorString(_e)); \
-        exit(1); \
+        ovg_fatal("CUDA error %s:%d: %s", __FILE__, __LINE__, \
+                  cudaGetErrorString(_e)); \
     } \
 } while(0)
 

@@ -18,6 +18,7 @@ set(OVG_SOURCES
     src/tg_block.c
     src/tg_transformer.c
     src/tg_gpt.c
+    src/ovg_error.c
 )
 
 if(OVG_CUDA)
@@ -47,6 +48,19 @@ if(NOT MSVC)
 endif()
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    add_executable(otto_von_grad src/main.c src/smoke_tests.c)
+    add_executable(otto_von_grad src/main.c)
     target_link_libraries(otto_von_grad PRIVATE ottovongrad)
+
+    add_executable(otto_von_grad_tests
+        tests/test_main.c
+        tests/test_ops.c
+        tests/test_train.c
+        tests/test_attention.c
+        tests/test_gpt.c
+    )
+    target_link_libraries(otto_von_grad_tests PRIVATE ottovongrad)
+    target_include_directories(otto_von_grad_tests PRIVATE tests/)
+
+    enable_testing()
+    add_test(NAME ovg_tests COMMAND otto_von_grad_tests)
 endif()

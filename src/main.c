@@ -5,7 +5,6 @@
 #include "tg_ops.h"
 #include "tg_train.h"
 #include "tg_gpt.h"
-#include "smoke_tests.h"
 
 #define MAX_VOCAB 256
 
@@ -106,18 +105,6 @@ static void generate(TgGPT *g, const Vocab *v, const int *seed, int steps) {
 
 int main(void) {
     srand(42);
-
-    attention_smoke_test(4, 4, 1);
-    attention_smoke_test(4, 4, 2);
-    encoder_smoke_test(4, 4);
-
-    mean_rows_smoke_test();
-    transpose_grad_accum_test();
-    collect_params_capacity_test();
-    embed_smoke_test();
-#ifdef OVG_CUDA_ENABLED
-    cuda_causal_mask_large_test();
-#endif
 
     int text_len;
     char *text        = read_file("candide.txt", &text_len);
