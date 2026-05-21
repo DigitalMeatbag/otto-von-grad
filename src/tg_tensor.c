@@ -1,18 +1,18 @@
 #include "tg_tensor.h"
+#include "ovg_error.h"
 
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 Tensor *tg_new(int rows, int cols) {
     Tensor *t = calloc(1, sizeof(Tensor));
-    if (!t) { fprintf(stderr, "tg_new: out of memory\n"); exit(1); }
+    if (!t) ovg_fatal("tg_new: out of memory");
     t->rows = rows;
     t->cols = cols;
     t->data = calloc((size_t)rows * cols, sizeof(float));
-    if (!t->data) { free(t); fprintf(stderr, "tg_new: out of memory\n"); exit(1); }
+    if (!t->data) { free(t); ovg_fatal("tg_new: out of memory"); }
     t->grad = calloc((size_t)rows * cols, sizeof(float));
-    if (!t->grad) { free(t->data); free(t); fprintf(stderr, "tg_new: out of memory\n"); exit(1); }
+    if (!t->grad) { free(t->data); free(t); ovg_fatal("tg_new: out of memory"); }
     return t;
 }
 

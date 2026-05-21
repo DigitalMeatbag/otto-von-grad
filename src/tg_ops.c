@@ -1,9 +1,9 @@
 #include "tg_ops.h"
 #include "tg_train.h"
+#include "ovg_error.h"
 
 #include <math.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,11 +21,9 @@ static Tensor *make_op(int rows, int cols, Tensor *p0, Tensor *p1, TgBackwardFn 
     out->n_parents   = p1 ? 2 : 1;
     out->backward_fn = fn;
 #ifdef OVG_CUDA_ENABLED
-    if (p0 && p1 && p0->on_cuda != p1->on_cuda) {
-        fprintf(stderr, "make_op: mixed CUDA/CPU parents (p0.on_cuda=%d, p1.on_cuda=%d)\n",
-                p0->on_cuda, p1->on_cuda);
-        exit(1);
-    }
+    if (p0 && p1 && p0->on_cuda != p1->on_cuda)
+        ovg_fatal("make_op: mixed CUDA/CPU parents (p0.on_cuda=%d, p1.on_cuda=%d)",
+                  p0->on_cuda, p1->on_cuda);
     if ((p0 && p0->on_cuda) || (p1 && p1->on_cuda))
         tg_cuda_alloc(out);
 #endif
@@ -340,11 +338,9 @@ static void backward_embed(Tensor *self) {
 // ── Ops ───────────────────────────────────────────────────────────────────────
 
 Tensor *tg_add(Tensor *a, Tensor *b) {
-    if (a->rows != b->rows || a->cols != b->cols) {
-        fprintf(stderr, "tg_add: shape mismatch [%dx%d] + [%dx%d]\n",
-                a->rows, a->cols, b->rows, b->cols);
-        exit(1);
-    }
+    if (a->rows != b->rows || a->cols != b->cols)
+        ovg_fatal("tg_add: shape mismatch [%dx%d] + [%dx%d]",
+                  a->rows, a->cols, b->rows, b->cols);
     Tensor *out = make_op(a->rows, a->cols, a, b, backward_add);
     int n = a->rows * a->cols;
 #ifdef OVG_CUDA_ENABLED
@@ -355,11 +351,9 @@ Tensor *tg_add(Tensor *a, Tensor *b) {
 }
 
 Tensor *tg_sub(Tensor *a, Tensor *b) {
-    if (a->rows != b->rows || a->cols != b->cols) {
-        fprintf(stderr, "tg_sub: shape mismatch [%dx%d] - [%dx%d]\n",
-                a->rows, a->cols, b->rows, b->cols);
-        exit(1);
-    }
+    if (a->rows != b->rows || a->cols != b->cols)
+        ovg_fatal("tg_sub: shape mismatch [%dx%d] - [%dx%d]",
+                  a->rows, a->cols, b->rows, b->cols);
     Tensor *out = make_op(a->rows, a->cols, a, b, backward_sub);
     int n = a->rows * a->cols;
 #ifdef OVG_CUDA_ENABLED
@@ -370,11 +364,9 @@ Tensor *tg_sub(Tensor *a, Tensor *b) {
 }
 
 Tensor *tg_mul(Tensor *a, Tensor *b) {
-    if (a->rows != b->rows || a->cols != b->cols) {
-        fprintf(stderr, "tg_mul: shape mismatch [%dx%d] * [%dx%d]\n",
-                a->rows, a->cols, b->rows, b->cols);
-        exit(1);
-    }
+    if (a->rows != b->rows || a->cols != b->cols)
+        ovg_fatal("tg_mul: shape mismatch [%dx%d] * [%dx%d]",
+                  a->rows, a->cols, b->rows, b->cols);
     Tensor *out = make_op(a->rows, a->cols, a, b, backward_mul);
     int n = a->rows * a->cols;
 #ifdef OVG_CUDA_ENABLED
@@ -396,11 +388,9 @@ Tensor *tg_pow(Tensor *a, float p) {
 }
 
 Tensor *tg_matmul(Tensor *a, Tensor *b) {
-    if (a->cols != b->rows) {
-        fprintf(stderr, "tg_matmul: shape mismatch [%dx%d] @ [%dx%d]\n",
-                a->rows, a->cols, b->rows, b->cols);
-        exit(1);
-    }
+    if (a->cols != b->rows)
+        ovg_fatal("tg_matmul: shape mismatch [%dx%d] @ [%dx%d]",
+                  a->rows, a->cols, b->rows, b->cols);
     int m = a->rows, K = a->cols, n = b->cols;
     Tensor *out = make_op(m, n, a, b, backward_matmul);
 
@@ -499,11 +489,9 @@ Tensor *tg_scale(Tensor *a, float s) {
 }
 
 Tensor *tg_causal_mask(Tensor *scores) {
-    if (scores->rows != scores->cols) {
-        fprintf(stderr, "tg_causal_mask: expected square scores matrix, got [%dx%d]\n",
-                scores->rows, scores->cols);
-        exit(1);
-    }
+    if (scores->rows != scores->cols)
+        ovg_fatal("tg_causal_mask: expected square scores matrix, got [%dx%d]",
+                  scores->rows, scores->cols);
     int seq_len = scores->rows;
     Tensor *out = make_op(seq_len, seq_len, scores, NULL, backward_causal_mask);
 #ifdef OVG_CUDA_ENABLED
@@ -530,7 +518,7 @@ Tensor *tg_layer_norm_rows(Tensor *a, float eps) {
 #endif
 
     out->cache = malloc(rows * sizeof(float));
-    if (!out->cache) { fprintf(stderr, "tg_layer_norm_rows: out of memory\n"); exit(1); }
+    if (!out->cache) ovg_fatal("tg_layer_norm_rows: out of memory");
 
     for (int r = 0; r < rows; r++) {
         float *x = a->data + r * cols;
@@ -571,11 +559,9 @@ Tensor *tg_softmax_rows(Tensor *a) {
 }
 
 Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
-    if (logits->rows != targets->rows || logits->cols != targets->cols) {
-        fprintf(stderr, "tg_cross_entropy: shape mismatch [%dx%d] vs [%dx%d]\n",
-                logits->rows, logits->cols, targets->rows, targets->cols);
-        exit(1);
-    }
+    if (logits->rows != targets->rows || logits->cols != targets->cols)
+        ovg_fatal("tg_cross_entropy: shape mismatch [%dx%d] vs [%dx%d]",
+                  logits->rows, logits->cols, targets->rows, targets->cols);
     int rows = logits->rows, cols = logits->cols;
     Tensor *out = make_op(1, 1, logits, targets, backward_cross_entropy);
 
@@ -591,7 +577,7 @@ Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
 #endif
 
     out->cache = malloc(rows * cols * sizeof(float));
-    if (!out->cache) { fprintf(stderr, "tg_cross_entropy: out of memory\n"); exit(1); }
+    if (!out->cache) ovg_fatal("tg_cross_entropy: out of memory");
     float loss = 0.0f;
     for (int r = 0; r < rows; r++) {
         float *row    = logits->data + r * cols;
@@ -614,11 +600,9 @@ Tensor *tg_cross_entropy(Tensor *logits, Tensor *targets) {
 }
 
 Tensor *tg_slice_cols(Tensor *a, int col_start, int col_end) {
-    if (col_start < 0 || col_end > a->cols || col_start >= col_end) {
-        fprintf(stderr, "tg_slice_cols: invalid range [%d,%d) for cols=%d\n",
-                col_start, col_end, a->cols);
-        exit(1);
-    }
+    if (col_start < 0 || col_end > a->cols || col_start >= col_end)
+        ovg_fatal("tg_slice_cols: invalid range [%d,%d) for cols=%d",
+                  col_start, col_end, a->cols);
     int w = col_end - col_start;
     Tensor *out = make_op(a->rows, w, a, NULL, backward_slice_cols);
     out->aux = (float)col_start;
@@ -635,19 +619,14 @@ Tensor *tg_slice_cols(Tensor *a, int col_start, int col_end) {
 }
 
 Tensor *tg_concat_cols(Tensor **parts, int n_parts) {
-    if (n_parts < 1 || n_parts > TG_MAX_PARENTS) {
-        fprintf(stderr, "tg_concat_cols: n_parts=%d out of range [1,%d]\n",
-                n_parts, TG_MAX_PARENTS);
-        exit(1);
-    }
+    if (n_parts < 1 || n_parts > TG_MAX_PARENTS)
+        ovg_fatal("tg_concat_cols: n_parts=%d out of range [1,%d]", n_parts, TG_MAX_PARENTS);
     int rows = parts[0]->rows;
     int total_cols = 0;
     for (int i = 0; i < n_parts; i++) {
-        if (parts[i]->rows != rows) {
-            fprintf(stderr, "tg_concat_cols: row mismatch at part %d: expected %d, got %d\n",
-                    i, rows, parts[i]->rows);
-            exit(1);
-        }
+        if (parts[i]->rows != rows)
+            ovg_fatal("tg_concat_cols: row mismatch at part %d: expected %d, got %d",
+                      i, rows, parts[i]->rows);
         total_cols += parts[i]->cols;
     }
 
@@ -663,10 +642,8 @@ Tensor *tg_concat_cols(Tensor **parts, int n_parts) {
             if (parts[i]->on_cuda) any_gpu = 1;
             else                   all_gpu = 0;
         }
-        if (any_gpu && !all_gpu) {
-            fprintf(stderr, "tg_concat_cols: mixed CUDA/CPU parts\n");
-            exit(1);
-        }
+        if (any_gpu && !all_gpu)
+            ovg_fatal("tg_concat_cols: mixed CUDA/CPU parts");
         if (any_gpu) {
             tg_cuda_alloc(out);
             int col_offset = 0;
@@ -736,7 +713,7 @@ Tensor *tg_dropout(Tensor *a, float p) {
 
     // Generate CPU mask regardless of GPU/CPU path
     float *mask = malloc((size_t)n * sizeof(float));
-    if (!mask) { fprintf(stderr, "tg_dropout: out of memory\n"); exit(1); }
+    if (!mask) ovg_fatal("tg_dropout: out of memory");
 
     if (!tg_training || p <= 0.0f) {
         for (int i = 0; i < n; i++) mask[i] = 1.0f;
@@ -766,17 +743,15 @@ Tensor *tg_dropout(Tensor *a, float p) {
 Tensor *tg_embed(Tensor *weight, const int *token_ids, int seq_len) {
     int V = weight->rows, C = weight->cols;
     for (int t = 0; t < seq_len; t++) {
-        if (token_ids[t] < 0 || token_ids[t] >= V) {
-            fprintf(stderr, "tg_embed: token id %d out of range [0, %d)\n", token_ids[t], V);
-            exit(1);
-        }
+        if (token_ids[t] < 0 || token_ids[t] >= V)
+            ovg_fatal("tg_embed: token id %d out of range [0, %d)", token_ids[t], V);
     }
 
     Tensor *out = make_op(seq_len, C, weight, NULL, backward_embed);
 
     // Cache ids as floats — CPU backward reads self->cache, CUDA backward reads cuda_cache
     out->cache = malloc((size_t)seq_len * sizeof(float));
-    if (!out->cache) { fprintf(stderr, "tg_embed: out of memory\n"); exit(1); }
+    if (!out->cache) ovg_fatal("tg_embed: out of memory");
     for (int t = 0; t < seq_len; t++) out->cache[t] = (float)token_ids[t];
 
 #ifdef OVG_CUDA_ENABLED

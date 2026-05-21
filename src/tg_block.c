@@ -1,8 +1,8 @@
 #include "tg_block.h"
 #include "tg_ops.h"
+#include "ovg_error.h"
 
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 TgBlock tg_block_create(int embed_dim, int hidden_dim, int seq_len, int n_heads) {
@@ -79,24 +79,16 @@ void tg_block_free(TgBlock *b) {
 }
 
 Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
-    if (!b || !X) {
-        fprintf(stderr, "tg_block_forward: NULL argument\n");
-        exit(1);
-    }
+    if (!b || !X)
+        ovg_fatal("tg_block_forward: NULL argument");
 
-    if (X->cols != b->embed_dim) {
-        fprintf(stderr,
-                "tg_block_forward: X has shape [%dx%d], expected cols=%d\n",
-                X->rows, X->cols, b->embed_dim);
-        exit(1);
-    }
+    if (X->cols != b->embed_dim)
+        ovg_fatal("tg_block_forward: X has shape [%dx%d], expected cols=%d",
+                  X->rows, X->cols, b->embed_dim);
 
-    if (X->rows != b->B1->rows || X->rows != b->B2->rows) {
-        fprintf(stderr,
-                "tg_block_forward: X rows=%d, expected bias rows B1=%d B2=%d\n",
-                X->rows, b->B1->rows, b->B2->rows);
-        exit(1);
-    }
+    if (X->rows != b->B1->rows || X->rows != b->B2->rows)
+        ovg_fatal("tg_block_forward: X rows=%d, expected bias rows B1=%d B2=%d",
+                  X->rows, b->B1->rows, b->B2->rows);
 
     /*
         Pre-norm transformer block:

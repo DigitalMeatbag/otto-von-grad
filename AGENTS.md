@@ -26,10 +26,18 @@ otto-von-grad/
     tg_gpt.c / tg_gpt.h             — TgGPT (embeddings + transformer + output projection)
     tg_cuda.cu / tg_cuda.h          — CUDA tensor lifecycle (tg_to_cuda, tg_from_cuda)
     cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops
-    value.c / value.h               — scalar autograd (historical reference)
-    mlp.c / mlp.h                   — scalar MLP (historical reference)
-    smoke_tests.c / smoke_tests.h   — standalone verification tests
+    ovg_error.c / ovg_error.h       — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
     main.c                          — demo: GPT training on candide.txt
+  tests/
+    ovg_test.h                      — minimal test assertion macros
+    test_ops.c                      — ops forward + backward correctness
+    test_train.c                    — backward pass, grad accumulation, optimizer step
+    test_attention.c                — causal + encoder attention
+    test_gpt.c                      — GPT forward shape, param collection
+    test_main.c                     — test runner entry point
+  legacy/
+    value.c / value.h               — scalar autograd (learning exercise, not compiled)
+    mlp.c / mlp.h                   — scalar MLP (learning exercise, not compiled)
   candide.txt                       — corpus for GPT character-level demo
 ```
 
@@ -190,15 +198,35 @@ VS 2026 (MSVC 14.50+) requires `-allow-unsupported-compiler` — already set in 
 # CPU only
 cmake -B build -G Ninja
 cmake --build build
-.\build\otto_von_grad.exe
+.\build\otto_von_grad.exe           # GPT demo (trains on candide.txt)
+.\build\otto_von_grad_tests.exe     # test suite — 23 tests, exits 0 on all-pass
 
 # With CUDA
 cmake -B build -G Ninja -DOVG_CUDA=ON
 cmake --build build
-.\build\otto_von_grad.exe
+.\build\otto_von_grad_tests.exe
 ```
 
 On VS 2026 the configure step handles the unsupported-compiler flag automatically.
+
+---
+
+## Error Handling
+
+All fatal errors in the library call `ovg_fatal()` (in `ovg_error.h/c`) instead of `exit(1)` inline.
+Consumers can install a pre-exit hook:
+
+```c
+#include "ovg_error.h"
+ovg_set_fatal_handler(my_logger);  // call before any threads are spawned (not thread-safe)
+```
+
+The hook receives the formatted message string. `ovg_fatal` **always calls `exit(1)` after the
+hook returns** — the handler is a logging/capture hook, not a recovery path.
+
+Tests use `setjmp`/`longjmp` to capture fatal calls in-process. See `tests/test_ops.c` for the
+pattern. Call `ovg_set_fatal_handler(NULL)` after each capture block to restore the default and
+reset the re-entrancy guard.
 
 ---
 

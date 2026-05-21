@@ -1,7 +1,7 @@
 #include "tg_train.h"
+#include "ovg_error.h"
 
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 #ifdef OVG_CUDA_ENABLED
@@ -14,11 +14,9 @@ int tg_training = 1;
 /* Depth-first topo sort using the tensor's own visited flag (O(n), not O(n²)). */
 static void topo_sort(Tensor *t, Tensor **topo, int *n) {
     if (t->visited) return;
-    if (*n >= TG_MAX_GRAPH) {
-        fprintf(stderr, "topo_sort: graph exceeds TG_MAX_GRAPH=%d; increase TG_MAX_GRAPH\n",
-                TG_MAX_GRAPH);
-        exit(1);
-    }
+    if (*n >= TG_MAX_GRAPH)
+        ovg_fatal("topo_sort: graph exceeds TG_MAX_GRAPH=%d; increase TG_MAX_GRAPH",
+                  TG_MAX_GRAPH);
     t->visited = 1;
     for (int i = 0; i < t->n_parents; i++)
         topo_sort(t->parents[i], topo, n);
@@ -32,10 +30,8 @@ static void clear_visited(Tensor **topo, int n) {
 void tg_sgd_step(Tensor **params, int n_params, float lr) {
 #ifdef OVG_CUDA_ENABLED
     for (int p = 0; p < n_params; p++) {
-        if (params[p]->on_cuda) {
-            fprintf(stderr, "tg_sgd_step: CUDA tensors not supported; use tg_adam_step_gpu\n");
-            exit(1);
-        }
+        if (params[p]->on_cuda)
+            ovg_fatal("tg_sgd_step: CUDA tensors not supported; use tg_adam_step_gpu");
     }
 #endif
     for (int p = 0; p < n_params; p++) {
@@ -50,10 +46,8 @@ void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
                   float lr, int step, float beta1, float beta2, float eps) {
 #ifdef OVG_CUDA_ENABLED
     for (int p = 0; p < n_params; p++) {
-        if (params[p]->on_cuda) {
-            fprintf(stderr, "tg_adam_step: CUDA tensors not supported; use tg_adam_step_gpu\n");
-            exit(1);
-        }
+        if (params[p]->on_cuda)
+            ovg_fatal("tg_adam_step: CUDA tensors not supported; use tg_adam_step_gpu");
     }
 #endif
     float bc1 = 1.0f - powf(beta1, (float)step);

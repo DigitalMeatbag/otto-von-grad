@@ -2,28 +2,6 @@
 
 Reverse-mode autograd engine and neural-network infrastructure, written from scratch in C.
 
-Contains two historical layers that illustrate the progression from scalar to tensor autodiff,
-then from simple MLPs up to a full GPT-style transformer.
-
----
-
-## Layers
-
-### Scalar autograd (reference)
-
-Files: `value.c / value.h`, `mlp.c / mlp.h`
-
-- Scalar computation graph with topological sort and reverse traversal
-- `Value` struct: data, grad, backward function pointer, parent pointers
-- Scalar MLP demonstrating XOR learning
-
-This layer is kept as a reference. The tensor layer supersedes it.
-
-### Tensor autograd (active engine)
-
-Files: `tg_tensor.h/c`, `tg_ops.h/c`, `tg_train.h/c`, `tg_mlp.h/c`,
-`attention.h/c`, `tg_block.h/c`, `tg_transformer.h/c`, `tg_gpt.h/c`
-
 ---
 
 ## Tensor Autograd API
@@ -150,9 +128,45 @@ cmake --build build
 .\build\otto_von_grad.exe
 ```
 
-CMake produces two targets:
+CMake produces three targets:
 - `ottovongrad` — static library (consumed by `vexilloscope`)
-- `otto_von_grad` — standalone executable
+- `otto_von_grad` — GPT character-level demo (trains on `candide.txt`)
+- `otto_von_grad_tests` — test suite
+
+---
+
+## Testing
+
+```powershell
+cmake --build build
+.\build\otto_von_grad_tests.exe   # 23 tests; exits 0 on all-pass
+
+# Or via CTest
+ctest --test-dir build
+```
+
+See [`tests/README.md`](tests/README.md) for details on the test structure.
+
+---
+
+## Error Handling
+
+All fatal errors in the library go through `ovg_fatal()` rather than calling `exit(1)` inline.
+Consumers can install a custom pre-exit hook (e.g. for logging or test capture) before any
+library calls:
+
+```c
+#include "ovg_error.h"
+
+void my_handler(const char *msg) {
+    my_logger_write(msg);
+    // ovg_fatal() will still call exit(1) after this returns
+}
+
+ovg_set_fatal_handler(my_handler);
+```
+
+`ovg_set_fatal_handler` is not thread-safe — call it before spawning any threads.
 
 ---
 

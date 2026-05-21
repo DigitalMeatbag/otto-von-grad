@@ -1,7 +1,7 @@
 #include "tg_gpt.h"
 #include "tg_ops.h"
+#include "ovg_error.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 
 TgGPT tg_gpt_create(int vocab_size, int embed_dim, int hidden_dim, int seq_len, int n_blocks, int n_heads) {
@@ -37,10 +37,8 @@ void tg_gpt_free(TgGPT *g) {
 }
 
 Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids) {
-    if (!g || !token_ids) {
-        fprintf(stderr, "tg_gpt_forward: NULL argument\n");
-        exit(1);
-    }
+    if (!g || !token_ids)
+        ovg_fatal("tg_gpt_forward: NULL argument");
 
     /*
         token_ids:  [seq_len]  (integer token indices)
@@ -59,10 +57,8 @@ Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids) {
 
 int tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params) {
     int needed = 3 + g->transformer.n_blocks * 8;  /* 8 = Wq+Wk+Wv+Wo + W1+B1+W2+B2 */
-    if (needed > max_params) {
-        fprintf(stderr, "tg_gpt_collect_params: need %d slots, capacity %d\n", needed, max_params);
-        exit(1);
-    }
+    if (needed > max_params)
+        ovg_fatal("tg_gpt_collect_params: need %d slots, capacity %d", needed, max_params);
     int n = 0;
     params[n++] = g->TokEmb;
     params[n++] = g->PosEmb;
