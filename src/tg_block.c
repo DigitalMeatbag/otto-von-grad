@@ -10,6 +10,11 @@ TgBlock tg_block_create(int embed_dim, int hidden_dim, int seq_len, int n_heads)
 
     b.attn = tg_attention_create(embed_dim, n_heads);
 
+    b.gamma1 = tg_new(1, embed_dim);  tg_fill(b.gamma1, 1.0f);  b.gamma1->persistent = 1;
+    b.beta1  = tg_new(1, embed_dim);  tg_fill(b.beta1,  0.0f);  b.beta1->persistent  = 1;
+    b.gamma2 = tg_new(1, embed_dim);  tg_fill(b.gamma2, 1.0f);  b.gamma2->persistent = 1;
+    b.beta2  = tg_new(1, embed_dim);  tg_fill(b.beta2,  0.0f);  b.beta2->persistent  = 1;
+
     b.W1 = tg_new(embed_dim, hidden_dim);
     b.B1 = tg_new(seq_len, hidden_dim);
     b.W2 = tg_new(hidden_dim, embed_dim);
@@ -38,6 +43,11 @@ TgBlock tg_block_create_encoder(int embed_dim, int hidden_dim, int seq_len, int 
 
     b.attn = tg_attention_create_encoder(embed_dim, n_heads);
 
+    b.gamma1 = tg_new(1, embed_dim);  tg_fill(b.gamma1, 1.0f);  b.gamma1->persistent = 1;
+    b.beta1  = tg_new(1, embed_dim);  tg_fill(b.beta1,  0.0f);  b.beta1->persistent  = 1;
+    b.gamma2 = tg_new(1, embed_dim);  tg_fill(b.gamma2, 1.0f);  b.gamma2->persistent = 1;
+    b.beta2  = tg_new(1, embed_dim);  tg_fill(b.beta2,  0.0f);  b.beta2->persistent  = 1;
+
     b.W1 = tg_new(embed_dim, hidden_dim);
     b.B1 = tg_new(seq_len, hidden_dim);
     b.W2 = tg_new(hidden_dim, embed_dim);
@@ -65,11 +75,19 @@ void tg_block_free(TgBlock *b) {
     if (!b) return;
 
     tg_attention_free(&b->attn);
+    tg_free(b->gamma1);
+    tg_free(b->beta1);
+    tg_free(b->gamma2);
+    tg_free(b->beta2);
     tg_free(b->W1);
     tg_free(b->B1);
     tg_free(b->W2);
     tg_free(b->B2);
 
+    b->gamma1 = NULL;
+    b->beta1  = NULL;
+    b->gamma2 = NULL;
+    b->beta2  = NULL;
     b->W1 = NULL;
     b->B1 = NULL;
     b->W2 = NULL;
@@ -105,12 +123,12 @@ Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
         Intermediate graph tensors are intentionally kept alive for now because
         Y2 depends on them for backward.
     */
-    Tensor *LN_X = tg_layer_norm_rows(X, 1.0e-5f);
+    Tensor *LN_X = tg_layer_norm_rows_affine(X, b->gamma1, b->beta1, 1.0e-5f);
     Tensor *A_raw = tg_attention_forward(&b->attn, LN_X);
     Tensor *A  = b->dropout > 0.0f ? tg_dropout(A_raw, b->dropout) : A_raw;
     Tensor *Y1 = tg_add(X, A);
 
-    Tensor *LN_Y1 = tg_layer_norm_rows(Y1, 1.0e-5f);
+    Tensor *LN_Y1 = tg_layer_norm_rows_affine(Y1, b->gamma2, b->beta2, 1.0e-5f);
     Tensor *Y1W1  = tg_matmul(LN_Y1, b->W1);
     Tensor *F1pre = tg_add(Y1W1, b->B1);
     Tensor *F1act = tg_tanh(F1pre);

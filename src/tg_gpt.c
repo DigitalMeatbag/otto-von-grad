@@ -56,7 +56,7 @@ Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids) {
 }
 
 int tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params) {
-    int needed = 3 + g->transformer.n_blocks * 8;  /* 8 = Wq+Wk+Wv+Wo + W1+B1+W2+B2 */
+    int needed = 3 + g->transformer.n_blocks * 12;  /* 12 = gamma1+beta1+Wq+Wk+Wv+Wo + gamma2+beta2+W1+B1+W2+B2 */
     if (needed > max_params)
         ovg_fatal("tg_gpt_collect_params: need %d slots, capacity %d", needed, max_params);
     int n = 0;
@@ -66,10 +66,14 @@ int tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params) {
 
     for (int i = 0; i < g->transformer.n_blocks; i++) {
         TgBlock *b  = &g->transformer.blocks[i];
+        params[n++] = b->gamma1;
+        params[n++] = b->beta1;
         params[n++] = b->attn.Wq;
         params[n++] = b->attn.Wk;
         params[n++] = b->attn.Wv;
         params[n++] = b->attn.Wo;
+        params[n++] = b->gamma2;
+        params[n++] = b->beta2;
         params[n++] = b->W1;
         params[n++] = b->B1;
         params[n++] = b->W2;

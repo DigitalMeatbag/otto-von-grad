@@ -6,6 +6,11 @@
 typedef struct {
     TgSelfAttention attn;
 
+    Tensor *gamma1;  /* LN affine scale before attention  [1 x embed_dim] */
+    Tensor *beta1;   /* LN affine shift before attention  [1 x embed_dim] */
+    Tensor *gamma2;  /* LN affine scale before FFN        [1 x embed_dim] */
+    Tensor *beta2;   /* LN affine shift before FFN        [1 x embed_dim] */
+
     Tensor *W1;
     Tensor *B1;
     Tensor *W2;
