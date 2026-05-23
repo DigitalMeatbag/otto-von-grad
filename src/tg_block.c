@@ -1,5 +1,7 @@
 #include "tg_block.h"
 #include "tg_ops.h"
+#include "tg_rng.h"
+#include "tg_train.h"
 #include "ovg_error.h"
 
 #include <math.h>
@@ -34,6 +36,7 @@ TgBlock tg_block_create(int embed_dim, int hidden_dim, int seq_len, int n_heads)
     b.embed_dim = embed_dim;
     b.hidden_dim = hidden_dim;
     b.dropout = 0.0f;
+    b.drop_path_rate = 0.0f;
 
     return b;
 }
@@ -67,6 +70,7 @@ TgBlock tg_block_create_encoder(int embed_dim, int hidden_dim, int seq_len, int 
     b.embed_dim = embed_dim;
     b.hidden_dim = hidden_dim;
     b.dropout = 0.0f;
+    b.drop_path_rate = 0.0f;
 
     return b;
 }
@@ -126,6 +130,13 @@ Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
     Tensor *LN_X = tg_layer_norm_rows_affine(X, b->gamma1, b->beta1, 1.0e-5f);
     Tensor *A_raw = tg_attention_forward(&b->attn, LN_X);
     Tensor *A  = b->dropout > 0.0f ? tg_dropout(A_raw, b->dropout) : A_raw;
+    if (tg_training && b->drop_path_rate > 0.0f) {
+        float u = tg_rng_uniform();
+        if (u < b->drop_path_rate)
+            A = tg_scale(A, 0.0f);
+        else
+            A = tg_scale(A, 1.0f / (1.0f - b->drop_path_rate));
+    }
     Tensor *Y1 = tg_add(X, A);
 
     Tensor *LN_Y1 = tg_layer_norm_rows_affine(Y1, b->gamma2, b->beta2, 1.0e-5f);
@@ -135,6 +146,13 @@ Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
     Tensor *F1    = b->dropout > 0.0f ? tg_dropout(F1act, b->dropout) : F1act;
     Tensor *F1W2  = tg_matmul(F1, b->W2);
     Tensor *F2    = tg_add(F1W2, b->B2);
+    if (tg_training && b->drop_path_rate > 0.0f) {
+        float u = tg_rng_uniform();
+        if (u < b->drop_path_rate)
+            F2 = tg_scale(F2, 0.0f);
+        else
+            F2 = tg_scale(F2, 1.0f / (1.0f - b->drop_path_rate));
+    }
     Tensor *Y2    = tg_add(Y1, F2);
 
     return Y2;

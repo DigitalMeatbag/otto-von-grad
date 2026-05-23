@@ -19,6 +19,7 @@ typedef struct {
     int   embed_dim;
     int   hidden_dim;
     float dropout;
+    float drop_path_rate;
 } TgBlock;
 
 TgBlock tg_block_create(int embed_dim, int hidden_dim, int seq_len, int n_heads);

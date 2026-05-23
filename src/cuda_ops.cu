@@ -709,6 +709,60 @@ void cuda_concat_cols_bwd(const float *g, float *da,
     concat_bwd_k<<<blocks(n),BLOCK>>>(g, da, rows, src_cols, total_cols, col_offset);
 }
 
+// slice_rows: extract rows [row_start, row_start+out_rows) from a
+__global__ void slice_rows_fwd_k(const float *a, float *out,
+                                  int a_rows, int cols, int row_start, int out_rows) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= out_rows * cols) return;
+    int i = idx / cols, j = idx % cols;
+    out[i * cols + j] = a[(row_start + i) * cols + j];
+}
+__global__ void slice_rows_bwd_k(const float *g, float *da,
+                                  int a_rows, int cols, int row_start, int out_rows) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= out_rows * cols) return;
+    int i = idx / cols, j = idx % cols;
+    atomicAdd(&da[(row_start + i) * cols + j], g[i * cols + j]);
+}
+
+void cuda_slice_rows_fwd(const float *a, float *out,
+                         int a_rows, int cols, int row_start, int out_rows) {
+    int n = out_rows * cols;
+    slice_rows_fwd_k<<<blocks(n),BLOCK>>>(a, out, a_rows, cols, row_start, out_rows);
+}
+void cuda_slice_rows_bwd(const float *g, float *da,
+                         int a_rows, int cols, int row_start, int out_rows) {
+    int n = out_rows * cols;
+    slice_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, a_rows, cols, row_start, out_rows);
+}
+
+// concat_rows: copy one part into the concatenated row buffer
+__global__ void concat_rows_fwd_k(const float *src, float *dst,
+                                   int src_rows, int cols, int total_rows, int row_off) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= src_rows * cols) return;
+    int i = idx / cols, j = idx % cols;
+    dst[(row_off + i) * cols + j] = src[i * cols + j];
+}
+__global__ void concat_rows_bwd_k(const float *g, float *da,
+                                   int src_rows, int cols, int total_rows, int row_off) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= src_rows * cols) return;
+    int i = idx / cols, j = idx % cols;
+    atomicAdd(&da[i * cols + j], g[(row_off + i) * cols + j]);
+}
+
+void cuda_concat_rows_fwd(const float *src, float *dst,
+                          int src_rows, int cols, int total_rows, int row_offset) {
+    int n = src_rows * cols;
+    concat_rows_fwd_k<<<blocks(n),BLOCK>>>(src, dst, src_rows, cols, total_rows, row_offset);
+}
+void cuda_concat_rows_bwd(const float *g, float *da,
+                          int src_rows, int cols, int total_rows, int row_offset) {
+    int n = src_rows * cols;
+    concat_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, src_rows, cols, total_rows, row_offset);
+}
+
 // cross_entropy: one block per row — computes softmax, then CE loss
 __global__ void cross_entropy_fwd_k(const float *logits, const float *targets,
                                      float *probs, float *loss_acc,

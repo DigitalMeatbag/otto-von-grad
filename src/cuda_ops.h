@@ -107,6 +107,19 @@ void cuda_concat_cols_fwd(const float *src, float *dst,
 void cuda_concat_cols_bwd(const float *g, float *da,
                           int rows, int src_cols, int total_cols, int col_offset);
 
+// slice_rows: a[a_rows × cols] → out[out_rows × cols] starting at row_start
+void cuda_slice_rows_fwd(const float *a, float *out,
+                         int a_rows, int cols, int row_start, int out_rows);
+void cuda_slice_rows_bwd(const float *g, float *da,
+                         int a_rows, int cols, int row_start, int out_rows);
+
+// concat_rows (one part at a time): copy src[src_rows × cols] into
+//   dst[total_rows × cols] at row offset row_offset.
+void cuda_concat_rows_fwd(const float *src, float *dst,
+                          int src_rows, int cols, int total_rows, int row_offset);
+void cuda_concat_rows_bwd(const float *g, float *da,
+                          int src_rows, int cols, int total_rows, int row_offset);
+
 // cross_entropy: logits[R×C] + targets[R×C] → probs_cache[R×C], loss_out[1]
 // loss_out must be zero-initialised.  After call, copy loss_out to host.
 void cuda_cross_entropy_fwd(const float *logits, const float *targets,

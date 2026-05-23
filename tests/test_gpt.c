@@ -6,11 +6,11 @@
 /* ── collect_params capacity (migrated from smoke_tests.c) ──────────────── */
 
 static void test_collect_params_capacity(void) {
-    /* 1 block → need exactly 3 + 1*8 = 11 slots */
+    /* 1 block → need exactly 3 + 1*12 = 15 slots (3 global + 12 per block) */
     TgGPT gpt = tg_gpt_create(16, 4, 8, 4, 1, 1);
-    Tensor *params[11];
-    int n = tg_gpt_collect_params(&gpt, params, 11);
-    OVG_CHECK_EQ(n, 11);
+    Tensor *params[15];
+    int n = tg_gpt_collect_params(&gpt, params, 15);
+    OVG_CHECK_EQ(n, 15);
     tg_gpt_free(&gpt);
 }
 

@@ -1,6 +1,8 @@
 #include "ovg_test.h"
 #include "tg_ops.h"
+#include "tg_rng.h"
 #include "tg_train.h"
+#include "tg_transformer.h"
 #include "ovg_error.h"
 
 #include <setjmp.h>
@@ -469,6 +471,166 @@ static void test_layer_norm_affine_shape_mismatch(void) {
     OVG_CHECK(strstr(g_last_error, "gamma") != NULL);
 }
 
+/* ── tg_rng_uniform ──────────────────────────────────────────────────────── */
+
+static void test_rng_uniform(void) {
+    tg_seed(42);
+    int n = 1000;
+    for (int i = 0; i < n; i++) {
+        float v = tg_rng_uniform();
+        OVG_CHECK(v >= 0.0f);
+        OVG_CHECK(v <= 1.0f);
+    }
+}
+
+/* ── tg_concat_rows ──────────────────────────────────────────────────────── */
+
+static void test_concat_rows(void) {
+    /* a[2×3], b[1×3] → out[3×3] */
+    Tensor *a = tg_new(2, 3);
+    Tensor *b = tg_new(1, 3);
+    a->persistent = b->persistent = 1;
+    float av[] = {1,2,3,4,5,6};
+    float bv[] = {7,8,9};
+    for (int i = 0; i < 6; i++) a->data[i] = av[i];
+    for (int i = 0; i < 3; i++) b->data[i] = bv[i];
+
+    Tensor *parts[2] = {a, b};
+    Tensor *out  = tg_concat_rows(parts, 2);
+    OVG_CHECK_SHAPE(out, 3, 3);
+
+    /* forward: row 0 = a row 0, row 1 = a row 1, row 2 = b row 0 */
+    OVG_CHECK_NEAR(out->data[0], 1.0f, 1e-5f);
+    OVG_CHECK_NEAR(out->data[4], 5.0f, 1e-5f);
+    OVG_CHECK_NEAR(out->data[6], 7.0f, 1e-5f);
+    OVG_CHECK_NEAR(out->data[8], 9.0f, 1e-5f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    /* d(sum)/d(a_ij) = 1, d(sum)/d(b_ij) = 1 */
+    for (int i = 0; i < 6; i++) OVG_CHECK_NEAR(a->grad[i], 1.0f, 1e-5f);
+    for (int i = 0; i < 3; i++) OVG_CHECK_NEAR(b->grad[i], 1.0f, 1e-5f);
+
+    tg_free_graph(loss);
+    a->persistent = b->persistent = 0;
+    tg_free(a); tg_free(b);
+}
+
+static void test_concat_rows_col_mismatch(void) {
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *a = tg_new(2, 3);
+        Tensor *b = tg_new(1, 4);  /* col mismatch */
+        Tensor *parts[2] = {a, b};
+        tg_concat_rows(parts, 2);
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "mismatch") != NULL);
+}
+
+/* ── tg_row_slice ────────────────────────────────────────────────────────── */
+
+static void test_row_slice(void) {
+    /* a[4×2], slice rows [1,3) → out[2×2] = rows 1 and 2 of a */
+    Tensor *a = tg_new(4, 2);
+    a->persistent = 1;
+    float av[] = {1,2, 3,4, 5,6, 7,8};
+    for (int i = 0; i < 8; i++) a->data[i] = av[i];
+
+    Tensor *out = tg_row_slice(a, 1, 3);
+    OVG_CHECK_SHAPE(out, 2, 2);
+
+    OVG_CHECK_NEAR(out->data[0], 3.0f, 1e-5f);
+    OVG_CHECK_NEAR(out->data[1], 4.0f, 1e-5f);
+    OVG_CHECK_NEAR(out->data[2], 5.0f, 1e-5f);
+    OVG_CHECK_NEAR(out->data[3], 6.0f, 1e-5f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    /* Only rows 1 and 2 receive gradient; rows 0 and 3 get zero. */
+    OVG_CHECK_NEAR(a->grad[0], 0.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[1], 0.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[2], 1.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[3], 1.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[4], 1.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[5], 1.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[6], 0.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[7], 0.0f, 1e-5f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+static void test_row_slice_oob(void) {
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *a = tg_new(3, 2);
+        tg_row_slice(a, 0, 5);  /* row_end=5 > rows=3 */
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "invalid") != NULL);
+}
+
+static void test_drop_path_rate_schedule(void) {
+    /* Verify linear ramp: block 0 gets 0.0, block 3 gets max_rate,
+     * intermediates follow rate = max_rate * i / (n_blocks - 1). */
+    int n = 4;
+    float max_rate = 0.2f;
+    TgTransformer t = tg_transformer_create_encoder(n, 8, 16, 4, 2, max_rate);
+
+    OVG_CHECK_NEAR(t.blocks[0].drop_path_rate, 0.0f,   1e-5f);
+    OVG_CHECK_NEAR(t.blocks[1].drop_path_rate, 0.2f / 3.0f, 1e-5f);
+    OVG_CHECK_NEAR(t.blocks[2].drop_path_rate, 0.4f / 3.0f, 1e-5f);
+    OVG_CHECK_NEAR(t.blocks[3].drop_path_rate, 0.2f,   1e-5f);
+
+    tg_transformer_free(&t);
+}
+
+static void test_drop_path_inference_noop(void) {
+    /* Same transformer, run twice in inference mode with different RNG seeds.
+     * Output must be identical because tg_training=0 disables drop-path. */
+    tg_training = 0;
+    int seq = 4, dim = 8, hidden = 16, heads = 2;
+    TgTransformer t = tg_transformer_create_encoder(2, dim, hidden, seq, heads, 0.5f);
+
+    Tensor *X = tg_new(seq, dim);
+    for (int i = 0; i < seq * dim; i++) X->data[i] = (float)(i % 7) * 0.1f;
+    X->persistent = 1;
+
+    tg_seed(42);
+    Tensor *Y0 = tg_transformer_forward(&t, X);
+    float saved[32];  /* seq*dim = 4*8 */
+    memcpy(saved, Y0->data, (size_t)(seq * dim) * sizeof(float));
+    tg_free_graph(Y0);
+
+    tg_seed(99);
+    Tensor *Y1 = tg_transformer_forward(&t, X);
+    for (int i = 0; i < seq * dim; i++)
+        OVG_CHECK_NEAR(saved[i], Y1->data[i], 1e-4f);
+
+    tg_free_graph(Y1);
+    tg_transformer_free(&t);
+    X->persistent = 0;
+    tg_free(X);
+}
+
 #ifdef OVG_CUDA_ENABLED
 static void test_cuda_new_ops(void) {
     Tensor *a = tg_new(2, 3);
@@ -558,6 +720,13 @@ void run_ops_tests(int *passed, int *failed) {
     RUN_TEST(test_embed_oob,           passed, failed);
     RUN_TEST(test_sparse_ce_oob,       passed, failed);
     RUN_TEST(test_layer_norm_affine_shape_mismatch, passed, failed);
+    RUN_TEST(test_rng_uniform,               passed, failed);
+    RUN_TEST(test_concat_rows,               passed, failed);
+    RUN_TEST(test_concat_rows_col_mismatch,  passed, failed);
+    RUN_TEST(test_row_slice,                 passed, failed);
+    RUN_TEST(test_row_slice_oob,             passed, failed);
+    RUN_TEST(test_drop_path_rate_schedule,   passed, failed);
+    RUN_TEST(test_drop_path_inference_noop,  passed, failed);
 #ifdef OVG_CUDA_ENABLED
     RUN_TEST(test_cuda_new_ops,        passed, failed);
     RUN_TEST(test_cuda_causal_mask_large, passed, failed);

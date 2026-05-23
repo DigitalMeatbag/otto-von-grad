@@ -44,6 +44,8 @@ All ops return a new `Tensor*` that participates in the computation graph.
 | `tg_mean_rows(a)` | [R,C] → [1,C] | column-wise mean |
 | `tg_slice_cols(a, s, e)` | [R,C] → [R,(e-s)] | |
 | `tg_concat_cols(parts, n)` | n×[R,C] → [R,n*C] | |
+| `tg_row_slice(a, s, e)` | [R,C] → [(e-s),C] | |
+| `tg_concat_rows(parts, n)` | n×[R,C] → [n*R,C] | all parts must have equal cols |
 | `tg_embed(weight, ids, T)` | [V,C], int[T] → [T,C] | gather rows by token id |
 | `tg_causal_mask(scores)` | [T,T] → [T,T] | -1e9 on future positions |
 | `tg_layer_norm_rows(a, eps)` | same → same | row-wise normalization |
@@ -96,8 +98,9 @@ TgBlock tg_block_create(int embed_dim, int hidden_dim, int seq_len, int n_heads)
 TgBlock tg_block_create_encoder(int embed_dim, int hidden_dim, int seq_len, int n_heads);
 ```
 
-`TgBlock.dropout` (float, default 0) — set after creation to enable dropout (e.g. `block.dropout = 0.1f`).
-Dropout is automatically skipped during inference when `tg_training == 0`.
+`TgBlock.dropout` (float, default 0) — set after creation to enable dropout.
+`TgBlock.drop_path_rate` (float, default 0) — stochastic depth rate per block; applied to both residual branches during training. Set automatically by `tg_transformer_create_encoder` via a linear depth schedule.
+Both are skipped during inference when `tg_training == 0`.
 
 Note: bias tensors `B1` and `B2` are explicitly shaped `[seq_len × dim]` — no broadcasting.
 
@@ -107,7 +110,7 @@ Stack of `TgBlock`s.
 
 ```c
 TgTransformer tg_transformer_create(int n_blocks, int embed_dim, int hidden_dim, int seq_len, int n_heads);
-TgTransformer tg_transformer_create_encoder(int n_blocks, int embed_dim, int hidden_dim, int seq_len, int n_heads);
+TgTransformer tg_transformer_create_encoder(int n_blocks, int embed_dim, int hidden_dim, int seq_len, int n_heads, float max_drop_path_rate);
 Tensor       *tg_transformer_forward(TgTransformer *t, Tensor *X);
 ```
 
@@ -183,8 +186,10 @@ ovg_set_fatal_handler(my_handler);
 ## RNG and Seeding (`tg_rng.h`)
 
 ```c
-void tg_seed(uint32_t seed);       // seed rand() + dropout xorshift32, log seed to stdout
-void tg_seed_from_entropy(void);   // seed from OS entropy (rand_s / arc4random / /dev/urandom)
+void     tg_seed(uint32_t seed);       // seed rand() + dropout xorshift32, log seed to stdout
+void     tg_seed_from_entropy(void);   // seed from OS entropy (rand_s / arc4random / /dev/urandom)
+uint32_t tg_rng_xorshift32(void);      // raw xorshift32 step (used internally by tg_dropout)
+float    tg_rng_uniform(void);         // uniform float in [0, 1) — wraps xorshift32
 ```
 
 Call `tg_seed_from_entropy()` once at startup (already done in `main.c`). The chosen seed

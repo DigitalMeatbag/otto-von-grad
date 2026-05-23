@@ -76,6 +76,8 @@ All ops in `tg_ops.c / tg_ops.h`. Tensor struct and lifecycle in `tg_tensor.h`.
 
 * `tg_slice_cols(a, start, end)` — [R x C] → [R x (end-start)]
 * `tg_concat_cols(parts, n)`     — n × [R x C] → [R x (n*C)]
+* `tg_row_slice(a, start, end)`  — [R x C] → [(end-start) x C]
+* `tg_concat_rows(parts, n)`     — n × [R x C] → [(n*R) x C]; all parts must share the same C
 * `tg_embed(weight, ids, T)`     — gather T rows from weight [V x C] by integer ids → [T x C]
 
 ### Attention / Normalization
@@ -140,18 +142,21 @@ Pre-norm architecture (LayerNorm → Attention → residual → LayerNorm → FF
 ```c
 typedef struct {
     TgSelfAttention attn;
+    Tensor *gamma1, *beta1;  /* LN affine scale/shift before attention [1 x embed_dim] */
+    Tensor *gamma2, *beta2;  /* LN affine scale/shift before FFN       [1 x embed_dim] */
     Tensor *W1, *B1, *W2, *B2;
-    int embed_dim, hidden_dim;
+    int   embed_dim, hidden_dim;
     float dropout;
+    float drop_path_rate;  /* 0 = disabled; set by tg_transformer_create_encoder */
 } TgBlock;
 
 TgBlock  tg_block_create(int embed_dim, int hidden_dim, int seq_len, int n_heads);
+TgBlock  tg_block_create_encoder(int embed_dim, int hidden_dim, int seq_len, int n_heads);
 void     tg_block_free(TgBlock *b);
 Tensor  *tg_block_forward(TgBlock *b, Tensor *X);
 ```
 
-Note: `tg_block_create` always creates **causal** blocks. For encoder (non-causal) blocks,
-construct `TgSelfAttention` directly via `tg_attention_create_encoder`.
+`tg_block_create` creates **causal** (GPT-style) blocks; `tg_block_create_encoder` creates non-causal (ViT/BERT-style) blocks. Both initialize `drop_path_rate = 0.0f`.
 
 Note: `B1` and `B2` are expanded to `[seq_len x ...]` — no broadcasting.
 
@@ -164,8 +169,15 @@ File: `tg_transformer.c / tg_transformer.h`
 ```c
 TgTransformer tg_transformer_create(int n_blocks, int embed_dim, int hidden_dim,
                                     int seq_len, int n_heads);
+TgTransformer tg_transformer_create_encoder(int n_blocks, int embed_dim, int hidden_dim,
+                                            int seq_len, int n_heads,
+                                            float max_drop_path_rate);
 Tensor       *tg_transformer_forward(TgTransformer *t, Tensor *X);
 ```
+
+`tg_transformer_create_encoder` applies a linear stochastic-depth schedule: block `i` of `N`
+gets `drop_path_rate = max_drop_path_rate * i / (N - 1)` (first block = 0, last = max). Pass
+`0.0f` to disable drop path entirely.
 
 ---
 
@@ -221,6 +233,7 @@ File: `tg_rng.c / tg_rng.h`
 void     tg_seed(uint32_t seed);       // seed rand() + xorshift32, log seed to stdout
 void     tg_seed_from_entropy(void);   // seed from OS entropy, then call tg_seed()
 uint32_t tg_rng_xorshift32(void);      // xorshift32 step (used internally by tg_dropout)
+float    tg_rng_uniform(void);         // uniform float in [0, 1) — wraps xorshift32
 ```
 
 `tg_seed_from_entropy()` picks the right source per platform (`rand_s` on Windows,

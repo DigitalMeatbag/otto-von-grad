@@ -40,6 +40,10 @@ uint32_t tg_rng_xorshift32(void) {
     return s_dropout_rng;
 }
 
+float tg_rng_uniform(void) {
+    return tg_rng_xorshift32() / (float)0x100000000ULL;
+}
+
 /* ── Seeding ─────────────────────────────────────────────────────────────── */
 
 void tg_seed(uint32_t seed) {
