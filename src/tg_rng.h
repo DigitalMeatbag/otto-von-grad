@@ -17,4 +17,7 @@ void tg_seed_from_entropy(void);
 /* xorshift32 step — called by tg_ops.c for dropout mask generation. */
 uint32_t tg_rng_xorshift32(void);
 
+/* Uniform float in [0, 1) — wraps xorshift32. */
+float tg_rng_uniform(void);
+
 #endif /* TG_RNG_H */

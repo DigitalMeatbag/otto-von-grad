@@ -400,6 +400,46 @@ static void backward_concat_cols(Tensor *self) {
     }
 }
 
+static void backward_slice_rows(Tensor *self) {
+    Tensor *a = self->parents[0];
+    int row_start = (int)self->aux;
+    int h = self->rows, cols = self->cols;
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) {
+        cuda_slice_rows_bwd(self->cuda_grad, a->cuda_grad, a->rows, cols, row_start, h);
+        return;
+    }
+#endif
+    for (int i = 0; i < h; i++)
+        for (int j = 0; j < cols; j++)
+            a->grad[(row_start + i) * cols + j] += self->grad[i * cols + j];
+}
+
+static void backward_concat_rows(Tensor *self) {
+    int total_rows = self->rows, cols = self->cols;
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) {
+        int row_offset = 0;
+        for (int p = 0; p < self->n_parents; p++) {
+            Tensor *part = self->parents[p];
+            cuda_concat_rows_bwd(self->cuda_grad, part->cuda_grad,
+                                 part->rows, cols, total_rows, row_offset);
+            row_offset += part->rows;
+        }
+        return;
+    }
+#endif
+    int row_offset = 0;
+    for (int p = 0; p < self->n_parents; p++) {
+        Tensor *part = self->parents[p];
+        int h = part->rows;
+        for (int i = 0; i < h; i++)
+            for (int j = 0; j < cols; j++)
+                part->grad[i * cols + j] += self->grad[(row_offset + i) * cols + j];
+        row_offset += h;
+    }
+}
+
 static void backward_mean_rows(Tensor *self) {
     Tensor *a = self->parents[0];
     int rows = a->rows, cols = a->cols;
@@ -918,6 +958,76 @@ Tensor *tg_concat_cols(Tensor **parts, int n_parts) {
                    parts[p]->data + i * w,
                    (size_t)w * sizeof(float));
         col_offset += w;
+    }
+    return out;
+}
+
+Tensor *tg_row_slice(Tensor *a, int row_start, int row_end) {
+    if (row_start < 0 || row_end > a->rows || row_start >= row_end)
+        ovg_fatal("tg_row_slice: invalid range [%d,%d) for rows=%d",
+                  row_start, row_end, a->rows);
+    int h = row_end - row_start;
+    Tensor *out = make_op(h, a->cols, a, NULL, backward_slice_rows);
+    out->aux = (float)row_start;
+#ifdef OVG_CUDA_ENABLED
+    if (out->on_cuda) {
+        cuda_slice_rows_fwd(a->cuda_data, out->cuda_data, a->rows, a->cols, row_start, h);
+        return out;
+    }
+#endif
+    for (int i = 0; i < h; i++)
+        memcpy(out->data + i * a->cols,
+               a->data + (row_start + i) * a->cols,
+               (size_t)a->cols * sizeof(float));
+    return out;
+}
+
+Tensor *tg_concat_rows(Tensor **parts, int n_parts) {
+    if (n_parts < 1 || n_parts > TG_MAX_PARENTS)
+        ovg_fatal("tg_concat_rows: n_parts=%d out of range [1,%d]", n_parts, TG_MAX_PARENTS);
+    int cols = parts[0]->cols;
+    int total_rows = 0;
+    for (int i = 0; i < n_parts; i++) {
+        if (parts[i]->cols != cols)
+            ovg_fatal("tg_concat_rows: col mismatch at part %d: expected %d, got %d",
+                      i, cols, parts[i]->cols);
+        total_rows += parts[i]->rows;
+    }
+
+    Tensor *out = tg_new(total_rows, cols);
+    for (int i = 0; i < n_parts; i++) out->parents[i] = parts[i];
+    out->n_parents   = n_parts;
+    out->backward_fn = backward_concat_rows;
+
+#ifdef OVG_CUDA_ENABLED
+    {
+        int any_gpu = 0, all_gpu = 1;
+        for (int i = 0; i < n_parts; i++) {
+            if (parts[i]->on_cuda) any_gpu = 1;
+            else                   all_gpu = 0;
+        }
+        if (any_gpu && !all_gpu)
+            ovg_fatal("tg_concat_rows: mixed CUDA/CPU parts");
+        if (any_gpu) {
+            tg_cuda_alloc(out);
+            int row_offset = 0;
+            for (int p = 0; p < n_parts; p++) {
+                cuda_concat_rows_fwd(parts[p]->cuda_data, out->cuda_data,
+                                     parts[p]->rows, cols, total_rows, row_offset);
+                row_offset += parts[p]->rows;
+            }
+            return out;
+        }
+    }
+#endif
+
+    int row_offset = 0;
+    for (int p = 0; p < n_parts; p++) {
+        int h = parts[p]->rows;
+        memcpy(out->data + row_offset * cols,
+               parts[p]->data,
+               (size_t)h * cols * sizeof(float));
+        row_offset += h;
     }
     return out;
 }

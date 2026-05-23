@@ -21,7 +21,7 @@ TgTransformer tg_transformer_create(int n_blocks, int embed_dim, int hidden_dim,
     return t;
 }
 
-TgTransformer tg_transformer_create_encoder(int n_blocks, int embed_dim, int hidden_dim, int seq_len, int n_heads) {
+TgTransformer tg_transformer_create_encoder(int n_blocks, int embed_dim, int hidden_dim, int seq_len, int n_heads, float max_drop_path_rate) {
     if (n_blocks <= 0)
         ovg_fatal("tg_transformer_create_encoder: n_blocks must be positive, got %d", n_blocks);
 
@@ -33,8 +33,11 @@ TgTransformer tg_transformer_create_encoder(int n_blocks, int embed_dim, int hid
     t.embed_dim = embed_dim;
     t.hidden_dim = hidden_dim;
 
-    for (int i = 0; i < n_blocks; i++)
+    for (int i = 0; i < n_blocks; i++) {
         t.blocks[i] = tg_block_create_encoder(embed_dim, hidden_dim, seq_len, n_heads);
+        t.blocks[i].drop_path_rate =
+            (n_blocks > 1) ? max_drop_path_rate * i / (n_blocks - 1) : 0.0f;
+    }
 
     return t;
 }

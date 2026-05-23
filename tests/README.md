@@ -22,7 +22,7 @@ The test binary exits 0 (all pass) or 1 (any failure). Each test prints `pass:` 
 |---|---|
 | `ovg_test.h` | `OVG_CHECK`, `OVG_CHECK_EQ`, `OVG_CHECK_NEAR`, `OVG_CHECK_SHAPE`, `RUN_TEST` macros |
 | `test_main.c` | Entry point; calls all suite `run_*_tests` functions and prints summary |
-| `test_ops.c` | Arithmetic (add/sub/mul/pow/matmul), reductions, layer_norm, softmax, cross_entropy, embed; error-path tests via `setjmp`/`longjmp` |
+| `test_ops.c` | Arithmetic (add/sub/mul/pow/matmul), reductions, layer_norm, softmax, cross_entropy, embed, concat_rows, row_slice, rng_uniform, drop_path schedule + inference no-op; error-path tests via `setjmp`/`longjmp` |
 | `test_train.c` | SGD direction, `tg_backward` grad zeroing, `tg_backward_accum` accumulation, transpose grad accumulation |
 | `test_attention.c` | Causal attention (single/multi-head) grad coverage, encoder row-sum and bidirectionality |
 | `test_gpt.c` | Param-count capacity check, GPT forward output shape |

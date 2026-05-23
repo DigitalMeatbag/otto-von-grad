@@ -26,6 +26,8 @@ Tensor *tg_cross_entropy_sparse(Tensor *logits, const int *class_ids, int n_ids,
 Tensor *tg_cross_entropy_sparse_no_sync(Tensor *logits, const int *class_ids, int n_ids, float label_smoothing);
 Tensor *tg_slice_cols(Tensor *a, int col_start, int col_end);
 Tensor *tg_concat_cols(Tensor **parts, int n_parts);
+Tensor *tg_row_slice(Tensor *a, int row_start, int row_end);
+Tensor *tg_concat_rows(Tensor **parts, int n_parts);
 Tensor *tg_dropout(Tensor *a, float p);
 Tensor *tg_embed(Tensor *weight, const int *token_ids, int seq_len);
 
