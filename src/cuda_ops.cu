@@ -981,9 +981,21 @@ __global__ void scale_grad_k(float *grad, float scale, int n) {
     if (i < n) grad[i] *= scale;
 }
 
+/* Reads sumsq from GPU, computes clip scale, and applies it — no CPU readback needed. */
+__global__ void clip_scale_grad_k(const float *sumsq, float max_norm,
+                                   float eps, float *grad, int n) {
+    float norm  = sqrtf(*sumsq);
+    float scale = (norm > max_norm) ? (max_norm / (norm + eps)) : 1.0f;
+    int i = blockIdx.x * BLOCK + threadIdx.x;
+    if (i < n) grad[i] *= scale;
+}
+
 void cuda_grad_sumsq(const float *grad, float *sum_out, int n)
     { grad_sumsq_k<<<blocks(n),BLOCK>>>(grad, sum_out, n); }
 void cuda_scale_grad(float *grad, float scale, int n)
     { scale_grad_k<<<blocks(n),BLOCK>>>(grad, scale, n); }
+void cuda_clip_scale_grad(const float *gpu_sumsq, float max_norm, float eps,
+                           float *grad, int n)
+    { clip_scale_grad_k<<<blocks(n),BLOCK>>>(gpu_sumsq, max_norm, eps, grad, n); }
 
 #endif // OVG_CUDA_ENABLED
