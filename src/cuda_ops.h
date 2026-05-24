@@ -154,6 +154,8 @@ void cuda_adam_step(float *param, float *m, float *v, const float *grad,
                     float beta1, float beta2, float eps);
 void cuda_grad_sumsq(const float *grad, float *sum_out, int n);
 void cuda_scale_grad(float *grad, float scale, int n);
+void cuda_clip_scale_grad(const float *gpu_sumsq, float max_norm, float eps,
+                           float *grad, int n);
 
 #ifdef __cplusplus
 }

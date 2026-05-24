@@ -39,20 +39,20 @@ void tg_from_cuda(Tensor *t) {
 void tg_cuda_alloc(Tensor *t) {
     size_t bytes = (size_t)t->rows * t->cols * sizeof(float);
     if (!t->cuda_data) {
-        CUDA_CHECK(cudaMalloc(&t->cuda_data, bytes));
+        CUDA_CHECK(cudaMallocAsync(&t->cuda_data, bytes, 0));
     }
     if (!t->cuda_grad) {
-        CUDA_CHECK(cudaMalloc(&t->cuda_grad, bytes));
+        CUDA_CHECK(cudaMallocAsync(&t->cuda_grad, bytes, 0));
     }
-    CUDA_CHECK(cudaMemset(t->cuda_data, 0, bytes));
-    CUDA_CHECK(cudaMemset(t->cuda_grad, 0, bytes));
+    CUDA_CHECK(cudaMemsetAsync(t->cuda_data, 0, bytes, 0));
+    CUDA_CHECK(cudaMemsetAsync(t->cuda_grad, 0, bytes, 0));
     t->on_cuda = 1;
 }
 
 void tg_cuda_alloc_cache(Tensor *t, int n) {
-    if (t->cuda_cache) { cudaFree(t->cuda_cache); t->cuda_cache = NULL; }
-    CUDA_CHECK(cudaMalloc(&t->cuda_cache, (size_t)n * sizeof(float)));
-    CUDA_CHECK(cudaMemset(t->cuda_cache, 0, (size_t)n * sizeof(float)));
+    if (t->cuda_cache) { CUDA_CHECK(cudaFreeAsync(t->cuda_cache, 0)); t->cuda_cache = NULL; }
+    CUDA_CHECK(cudaMallocAsync(&t->cuda_cache, (size_t)n * sizeof(float), 0));
+    CUDA_CHECK(cudaMemsetAsync(t->cuda_cache, 0, (size_t)n * sizeof(float), 0));
 }
 
 void tg_cuda_upload_cache(Tensor *t, const float *host_src, int n) {
@@ -63,25 +63,25 @@ void tg_cuda_upload_cache(Tensor *t, const float *host_src, int n) {
 void tg_cuda_zero_grad(Tensor *t) {
     if (!t->on_cuda || !t->cuda_grad) return;
     size_t bytes = (size_t)t->rows * t->cols * sizeof(float);
-    CUDA_CHECK(cudaMemset(t->cuda_grad, 0, bytes));
+    CUDA_CHECK(cudaMemsetAsync(t->cuda_grad, 0, bytes, 0));
 }
 
 void tg_cuda_free(Tensor *t) {
-    if (t->cuda_data)  { cudaFree(t->cuda_data);  t->cuda_data  = NULL; }
-    if (t->cuda_grad)  { cudaFree(t->cuda_grad);  t->cuda_grad  = NULL; }
-    if (t->cuda_cache) { cudaFree(t->cuda_cache); t->cuda_cache = NULL; }
+    if (t->cuda_data)  { CUDA_CHECK(cudaFreeAsync(t->cuda_data,  0)); t->cuda_data  = NULL; }
+    if (t->cuda_grad)  { CUDA_CHECK(cudaFreeAsync(t->cuda_grad,  0)); t->cuda_grad  = NULL; }
+    if (t->cuda_cache) { CUDA_CHECK(cudaFreeAsync(t->cuda_cache, 0)); t->cuda_cache = NULL; }
     t->on_cuda = 0;
 }
 
 float *tg_cuda_malloc_floats(int n) {
     float *p = NULL;
-    CUDA_CHECK(cudaMalloc(&p, (size_t)n * sizeof(float)));
-    CUDA_CHECK(cudaMemset(p, 0, (size_t)n * sizeof(float)));
+    CUDA_CHECK(cudaMallocAsync(&p, (size_t)n * sizeof(float), 0));
+    CUDA_CHECK(cudaMemsetAsync(p, 0, (size_t)n * sizeof(float), 0));
     return p;
 }
 
 void tg_cuda_free_floats(float *p) {
-    if (p) cudaFree(p);
+    if (p) CUDA_CHECK(cudaFreeAsync(p, 0));
 }
 
 void tg_cuda_zero_float(float *p) {
@@ -94,8 +94,10 @@ float tg_cuda_read_float(float *p) {
     return v;
 }
 
+__global__ void set_scalar_k(float *dst, float val) { *dst = val; }
+
 void tg_cuda_set_grad_scalar(Tensor *t, float val) {
-    CUDA_CHECK(cudaMemcpy(t->cuda_grad, &val, sizeof(float), cudaMemcpyHostToDevice));
+    set_scalar_k<<<1, 1>>>(t->cuda_grad, val);
 }
 
 #endif // OVG_CUDA_ENABLED

@@ -85,7 +85,14 @@ float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps
             Tensor *t = params[p];
             cuda_grad_sumsq(t->cuda_grad, gpu_sumsq, t->rows * t->cols);
         }
-        sumsq = tg_cuda_read_float(gpu_sumsq);
+        /* Clip and scale entirely on GPU — no CPU readback. */
+        for (int p = 0; p < n_params; p++) {
+            Tensor *t = params[p];
+            cuda_clip_scale_grad(gpu_sumsq, max_norm, eps,
+                                 t->cuda_grad, t->rows * t->cols);
+        }
+        tg_cuda_free_floats(gpu_sumsq);
+        return 0.0f;  /* norm not read back to CPU in CUDA path */
     } else {
 #endif
     for (int p = 0; p < n_params; p++) {
@@ -101,29 +108,13 @@ float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps
     float norm = sqrtf(sumsq);
     if (norm > max_norm) {
         float scale = max_norm / (norm + eps);
-#ifdef OVG_CUDA_ENABLED
-        if (gpu_sumsq) {
-            for (int p = 0; p < n_params; p++) {
-                Tensor *t = params[p];
-                cuda_scale_grad(t->cuda_grad, scale, t->rows * t->cols);
-            }
-        } else {
-#endif
         for (int p = 0; p < n_params; p++) {
             Tensor *t = params[p];
             int n = t->rows * t->cols;
             for (int i = 0; i < n; i++)
                 t->grad[i] *= scale;
         }
-#ifdef OVG_CUDA_ENABLED
-        }
-#endif
     }
-
-#ifdef OVG_CUDA_ENABLED
-    if (gpu_sumsq)
-        tg_cuda_free_floats(gpu_sumsq);
-#endif
     return norm;
 }
 
