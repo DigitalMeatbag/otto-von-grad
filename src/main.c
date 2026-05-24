@@ -108,7 +108,7 @@ int main(void) {
     tg_seed_from_entropy();
 
     int text_len;
-    char *text        = read_file("candide.txt", &text_len);
+    char *text        = read_file("data/text/candide.txt", &text_len);
     Vocab vocab       = vocab_build(text, text_len);
     int *all_tokens   = tokenize(text, text_len, &vocab);
 
@@ -129,7 +129,7 @@ int main(void) {
     Tensor *params[64];
     int n_params = tg_gpt_collect_params(&gpt, params, 64);
 
-    printf("loaded candide.txt: %d chars\n", text_len);
+    printf("loaded data/text/candide.txt: %d chars\n", text_len);
     printf("vocab size: %d\n", vocab.size);
     printf("params: %d tensors\n", n_params);
     printf("baseline ln(%d) ~= %.6f\n", vocab.size, logf((float)vocab.size));

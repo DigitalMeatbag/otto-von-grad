@@ -51,7 +51,7 @@ CPU build:
 cmake -B build -G Ninja
 cmake --build build
 .\build\otto_von_grad_tests.exe   # test suite — exits 0 on all-pass
-.\build\otto_von_grad.exe         # GPT character-level demo (candide.txt)
+.\build\otto_von_grad.exe         # GPT character-level demo (data/text/candide.txt)
 ```
 
 CUDA build:
@@ -89,7 +89,7 @@ support it.
   `tg_rng_xorshift32`). Owns both the `rand()` seed and the xorshift32 dropout state.
 - `src/tg_cuda.cu`, `src/tg_cuda.h`: tensor CUDA upload/download lifecycle.
 - `src/cuda_ops.cu`, `src/cuda_ops.h`: CUDA kernels for tensor ops.
-- `src/main.c`: GPT character-level demo using `candide.txt`.
+- `src/main.c`: GPT character-level demo using `data/text/candide.txt`.
 - `tests/ovg_test.h`: test assertion macros (`OVG_CHECK`, `OVG_CHECK_NEAR`, etc.).
 - `tests/test_main.c`: test runner entry point.
 - `tests/test_ops.c`: ops forward/backward + error-path tests.
