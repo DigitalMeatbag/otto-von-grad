@@ -39,7 +39,9 @@ otto-von-grad/
   legacy/
     value.c / value.h               — scalar autograd (learning exercise, not compiled)
     mlp.c / mlp.h                   — scalar MLP (learning exercise, not compiled)
-  candide.txt                       — corpus for GPT character-level demo
+  data/
+    text/
+      candide.txt                   — corpus for GPT character-level demo
 ```
 
 ---

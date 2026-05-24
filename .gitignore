@@ -1,4 +1,5 @@
 build/
+build_release/
 .claude/
 *.o
 *.a

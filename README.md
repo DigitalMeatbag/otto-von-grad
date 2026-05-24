@@ -118,7 +118,7 @@ Tensor       *tg_transformer_forward(TgTransformer *t, Tensor *X);
 
 ### TgGPT (`tg_gpt.h`)
 
-Token + positional embeddings → transformer → output projection. Trained on `candide.txt`
+Token + positional embeddings → transformer → output projection. Trained on `data/text/candide.txt`
 at character level; generates plausible character-texture output.
 
 ```c
@@ -145,7 +145,7 @@ cmake --build build
 
 CMake produces three targets:
 - `ottovongrad` — static library (consumed by `vexilloscope`)
-- `otto_von_grad` — GPT character-level demo (trains on `candide.txt`)
+- `otto_von_grad` — GPT character-level demo (trains on `data/text/candide.txt`)
 - `otto_von_grad_tests` — test suite
 
 ---
