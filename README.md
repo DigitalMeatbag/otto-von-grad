@@ -69,6 +69,8 @@ void tg_sgd_step(Tensor **params, int n, float lr);  // in-place SGD
 void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
                   float lr, int step, float beta1, float beta2, float eps);  // bias-corrected Adam
 float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps);
+// Note: in the CUDA path the norm is computed and clipped entirely on device;
+// the return value is 0.0f (norm is not read back to the CPU).
 void tg_free_graph(Tensor *root);        // free all non-persistent nodes in graph
 ```
 

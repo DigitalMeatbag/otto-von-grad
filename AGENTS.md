@@ -111,6 +111,9 @@ void  tg_adam_step_gpu(Tensor **params, float **m_gpu, float **v_gpu, int n,
                        float lr, int t, float b1, float b2, float eps);
 
 void  tg_free_graph(Tensor *root);                     // free non-persistent graph tensors
+
+// tg_clip_grad_norm: CPU path returns the actual gradient norm; CUDA path clips entirely
+// on device and returns 0.0f (the norm is not materialized on the host).
 ```
 
 ---
