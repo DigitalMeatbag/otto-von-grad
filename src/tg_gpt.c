@@ -55,6 +55,11 @@ Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids) {
     return tg_matmul(Y, g->Wout);
 }
 
+TgGPT tg_gpt_create_from_config(const TgGPTConfig *cfg) {
+    return tg_gpt_create(cfg->vocab_size, cfg->embed_dim, cfg->hidden_dim,
+                         cfg->seq_len, cfg->n_blocks, cfg->n_heads);
+}
+
 int tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params) {
     int needed = 3 + g->transformer.n_blocks * 12;  /* 12 = gamma1+beta1+Wq+Wk+Wv+Wo + gamma2+beta2+W1+B1+W2+B2 */
     if (needed > max_params)

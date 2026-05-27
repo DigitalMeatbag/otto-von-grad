@@ -13,16 +13,21 @@ See `AGENTS.md` for full architecture, API reference, and constraints.
 
 ## Build
 
-```powershell
-# CPU only
-cmake -B build -G Ninja
-cmake --build build
-.\build\otto_von_grad.exe
+Default preset: VS2026, CUDA enabled, Release mode, outputs to `build\`.
 
-# With CUDA
-cmake -B build -G Ninja -DOVG_CUDA=ON
-cmake --build build
-.\build\otto_von_grad.exe
+```powershell
+# First configure (fresh clone or after deleting build/)
+cmake --preset default
+
+# Every subsequent build
+cmake --build --preset default
+```
+
+Non-default presets (for the rare case):
+
+```powershell
+cmake --preset debug   && cmake --build --preset debug   # Debug build
+cmake --preset cpu     && cmake --build --preset cpu     # CPU-only, no CUDA
 ```
 
 ## Verification
@@ -30,8 +35,8 @@ cmake --build build
 After code changes, build and run the test binary:
 
 ```powershell
-cmake --build build
-.\build\otto_von_grad_tests.exe   # 36 tests; exits 0 on all-pass
+cmake --build --preset default
+.\build\otto_von_grad_tests.exe   # 48 tests; exits 0 on all-pass
 ```
 
 `otto_von_grad.exe` is the GPT character-level demo (trains on `candide.txt`). It no longer runs tests at startup.

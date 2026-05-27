@@ -122,30 +122,87 @@ Token + positional embeddings → transformer → output projection. Trained on 
 at character level; generates plausible character-texture output.
 
 ```c
+typedef struct {
+    int vocab_size, embed_dim, hidden_dim, seq_len, n_blocks, n_heads;
+} TgGPTConfig;
+
 TgGPT   tg_gpt_create(int vocab_size, int embed_dim, int hidden_dim, int seq_len, int n_blocks, int n_heads);
+TgGPT   tg_gpt_create_from_config(const TgGPTConfig *cfg);
 Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids);   // int[seq_len] → [T×V] logits
 int     tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params);
+// param count = 3 + n_blocks * 12
 ```
+
+### TgVocab / tokenizer (`tg_tokenizer.h`)
+
+Character-level vocabulary over raw bytes. Every unique byte in the corpus gets a sequential id.
+
+```c
+typedef struct { char chars[256]; int ids[256]; int size; } TgVocab;
+
+char    *tg_read_file(const char *path, int *out_len);             // malloc'd; caller frees
+TgVocab  tg_vocab_build(const char *text, int len);
+int      tg_vocab_encode(const TgVocab *v, char c);                // ovg_fatal on unknown char
+char     tg_vocab_decode(const TgVocab *v, int id);                // ovg_fatal on bad id
+int     *tg_tokenize(const char *text, int len, const TgVocab *v); // malloc'd; caller frees
+```
+
+### Sampling (`tg_sample.h`)
+
+```c
+int  tg_sample_argmax(const Tensor *logits, int row);
+int  tg_sample_topk(const Tensor *logits, int row, float temperature, int top_k);
+void tg_generate(TgGPT *g, const TgVocab *v,
+                 const int *context, int ctx_len,
+                 int steps, float temperature, int top_k,
+                 void (*on_token)(char c, void *ud), void *userdata);
+```
+
+`tg_sample_topk`: scales logits by `1/temperature`, restricts to the top-`k` candidates, then
+samples from their softmax distribution. `top_k=0` uses the full vocab; `top_k=1` is deterministic
+argmax. `tg_generate` manages the sliding context window and sets `tg_training=0` for the
+duration of generation.
+
+### Checkpoints (`tg_checkpoint.h`)
+
+```c
+int tg_checkpoint_save(const char *path, Tensor **params, int n);  // 0 on success, -1 on error
+int tg_checkpoint_load(const char *path, Tensor **params, int n);  // silent -1 if file missing
+```
+
+Saves all param tensors to a flat binary file (magic header + shapes + float data). Load validates
+magic, param count, and per-tensor shapes. A missing file returns `-1` silently (expected on first
+run); any other failure writes to stderr.
+
+Checkpoint files are written to `data/checkpoints/` (gitignored).
 
 ---
 
 ## Build
 
-```powershell
-cd otto-von-grad
-cmake -B build -G Ninja
-cmake --build build
-.\build\otto_von_grad.exe
+Default preset: VS2026, CUDA enabled, Release mode. Outputs land directly in `build\`.
 
-# With CUDA
-cmake -B build -G Ninja -DOVG_CUDA=ON
-cmake --build build
+```powershell
+# First configure (fresh clone or after deleting build/)
+cmake --preset default
+
+# Every subsequent build
+cmake --build --preset default
 .\build\otto_von_grad.exe
 ```
 
+Non-default presets:
+
+```powershell
+cmake --preset debug  && cmake --build --preset debug   # Debug + CUDA
+cmake --preset cpu    && cmake --build --preset cpu     # Release, CPU-only
+```
+
 CMake produces three targets:
-- `ottovongrad` — static library (consumed by `vexilloscope`)
-- `otto_von_grad` — GPT character-level demo (trains on `data/text/candide.txt`)
+- `ottovongrad` — static library
+- `otto_von_grad` — GPT character-level demo: trains on `data/text/candide.txt`, reports train and
+  val loss every 200 steps, then generates text using temperature + top-k sampling. Saves a
+  checkpoint to `data/checkpoints/model.bin` on exit; resumes from it automatically on the next run.
 - `otto_von_grad_tests` — test suite
 
 ---
@@ -153,11 +210,11 @@ CMake produces three targets:
 ## Testing
 
 ```powershell
-cmake --build build
-.\build\otto_von_grad_tests.exe   # exits 0 on all-pass
+cmake --build --preset default
+.\build\otto_von_grad_tests.exe   # 48 tests; exits 0 on all-pass
 
 # Or via CTest
-ctest -C Debug --test-dir build     # use -C for Visual Studio multi-config builds
+ctest -C Release --test-dir build   # use -C for Visual Studio multi-config builds
 ```
 
 See [`tests/README.md`](tests/README.md) for details on the test structure.

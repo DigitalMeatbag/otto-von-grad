@@ -3,9 +3,13 @@ project(otto_von_grad C)
 
 set(CMAKE_C_STANDARD 11)
 
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
-endif()
+# Flatten all build outputs into the binary dir (no Release/ or Debug/ subdirs)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}")
 
 option(OVG_CUDA "Enable CUDA acceleration (requires CUDA Toolkit)" OFF)
 
@@ -19,6 +23,9 @@ set(OVG_SOURCES
     src/tg_block.c
     src/tg_transformer.c
     src/tg_gpt.c
+    src/tg_tokenizer.c
+    src/tg_sample.c
+    src/tg_checkpoint.c
     src/ovg_error.c
 )
 
@@ -58,6 +65,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         tests/test_train.c
         tests/test_attention.c
         tests/test_gpt.c
+        tests/test_tokenizer.c
+        tests/test_checkpoint.c
+        tests/test_sample.c
     )
     target_link_libraries(otto_von_grad_tests PRIVATE ottovongrad)
     target_include_directories(otto_von_grad_tests PRIVATE tests/)
