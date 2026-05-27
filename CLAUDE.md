@@ -5,8 +5,8 @@ See `AGENTS.md` for full architecture, API reference, and constraints.
 
 - Every op in `tg_ops.c` has a paired `_backward` function — keep them together
 - No external ML libraries
-- No silent broadcasting — shape mismatches must fail loudly (`TG_MAX_PARENTS = 8`, `TG_MAX_GRAPH = 4096`)
-- All tensors are 2D `[rows x cols]`; no higher-rank ops
+- No silent broadcasting — shape mismatches must fail loudly (`TG_MAX_PARENTS = 8`, `TG_MAX_GRAPH = 8192`)
+- Tensors are N-D up to `TG_MAX_DIMS = 4`; shape stored in `int shape[TG_MAX_DIMS]` with `int ndim` (see `docs/ND_FOUNDATION.md`)
 - `persistent = 1` marks tensors that survive `tg_free_graph`
 - When adding CUDA kernels, preserve the symmetric CPU fallback path
 - Correctness and readability over performance

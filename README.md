@@ -46,6 +46,8 @@ All ops return a new `Tensor*` that participates in the computation graph.
 | `tg_concat_cols(parts, n)` | n×[R,C] → [R,n*C] | |
 | `tg_row_slice(a, s, e)` | [R,C] → [(e-s),C] | |
 | `tg_concat_rows(parts, n)` | n×[R,C] → [n*R,C] | all parts must have equal cols |
+| `tg_repeat_rows(a, n)` | [1,C] → [n,C] | input must be exactly 1 row; backward sums grads across rows |
+| `tg_repeat_cols(a, n)` | [R,1] → [R,n] | input must be exactly 1 col; backward sums grads across cols |
 | `tg_embed(weight, ids, T)` | [V,C], int[T] → [T,C] | gather rows by token id |
 | `tg_causal_mask(scores)` | [T,T] → [T,T] | -1e9 on future positions |
 | `tg_layer_norm_rows(a, eps)` | same → same | row-wise normalization |
@@ -211,7 +213,7 @@ CMake produces three targets:
 
 ```powershell
 cmake --build --preset default
-.\build\otto_von_grad_tests.exe   # 48 tests; exits 0 on all-pass
+.\build\otto_von_grad_tests.exe   # 54 tests; exits 0 on all-pass
 
 # Or via CTest
 ctest -C Release --test-dir build   # use -C for Visual Studio multi-config builds

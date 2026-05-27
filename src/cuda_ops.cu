@@ -763,6 +763,48 @@ void cuda_concat_rows_bwd(const float *g, float *da,
     concat_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, src_rows, cols, total_rows, row_offset);
 }
 
+// repeat_rows: a[1 × cols] → out[n_rows × cols]
+__global__ void repeat_rows_fwd_k(const float *a, float *out, int n_rows, int cols) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= n_rows * cols) return;
+    out[idx] = a[idx % cols];
+}
+__global__ void repeat_rows_bwd_k(const float *g, float *da, int n_rows, int cols) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= n_rows * cols) return;
+    atomicAdd(&da[idx % cols], g[idx]);
+}
+
+void cuda_repeat_rows_fwd(const float *a, float *out, int n_rows, int cols) {
+    int n = n_rows * cols;
+    repeat_rows_fwd_k<<<blocks(n),BLOCK>>>(a, out, n_rows, cols);
+}
+void cuda_repeat_rows_bwd(const float *g, float *da, int n_rows, int cols) {
+    int n = n_rows * cols;
+    repeat_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, n_rows, cols);
+}
+
+// repeat_cols: a[rows × 1] → out[rows × n_cols]
+__global__ void repeat_cols_fwd_k(const float *a, float *out, int rows, int n_cols) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= rows * n_cols) return;
+    out[idx] = a[idx / n_cols];
+}
+__global__ void repeat_cols_bwd_k(const float *g, float *da, int rows, int n_cols) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= rows * n_cols) return;
+    atomicAdd(&da[idx / n_cols], g[idx]);
+}
+
+void cuda_repeat_cols_fwd(const float *a, float *out, int rows, int n_cols) {
+    int n = rows * n_cols;
+    repeat_cols_fwd_k<<<blocks(n),BLOCK>>>(a, out, rows, n_cols);
+}
+void cuda_repeat_cols_bwd(const float *g, float *da, int rows, int n_cols) {
+    int n = rows * n_cols;
+    repeat_cols_bwd_k<<<blocks(n),BLOCK>>>(g, da, rows, n_cols);
+}
+
 // cross_entropy: one block per row — computes softmax, then CE loss
 __global__ void cross_entropy_fwd_k(const float *logits, const float *targets,
                                      float *probs, float *loss_acc,
