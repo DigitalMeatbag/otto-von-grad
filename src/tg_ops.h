@@ -28,6 +28,8 @@ Tensor *tg_slice_cols(Tensor *a, int col_start, int col_end);
 Tensor *tg_concat_cols(Tensor **parts, int n_parts);
 Tensor *tg_row_slice(Tensor *a, int row_start, int row_end);
 Tensor *tg_concat_rows(Tensor **parts, int n_parts);
+Tensor *tg_repeat_rows(Tensor *a, int n_rows);
+Tensor *tg_repeat_cols(Tensor *a, int n_cols);
 Tensor *tg_dropout(Tensor *a, float p);
 Tensor *tg_embed(Tensor *weight, const int *token_ids, int seq_len);
 

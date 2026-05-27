@@ -588,6 +588,100 @@ static void test_row_slice_oob(void) {
     OVG_CHECK(strstr(g_last_error, "invalid") != NULL);
 }
 
+/* ── tg_repeat_rows ──────────────────────────────────────────────────────── */
+
+static void test_repeat_rows(void) {
+    /* a[1×3] repeated 4 times → out[4×3] */
+    Tensor *a = tg_new(1, 3);
+    a->persistent = 1;
+    a->data[0] = 1.0f; a->data[1] = 2.0f; a->data[2] = 3.0f;
+
+    Tensor *out = tg_repeat_rows(a, 4);
+    OVG_CHECK_SHAPE(out, 4, 3);
+
+    /* every row of out must equal a */
+    for (int i = 0; i < 4; i++) {
+        OVG_CHECK_NEAR(out->data[i * 3 + 0], 1.0f, 1e-5f);
+        OVG_CHECK_NEAR(out->data[i * 3 + 1], 2.0f, 1e-5f);
+        OVG_CHECK_NEAR(out->data[i * 3 + 2], 3.0f, 1e-5f);
+    }
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    /* each a->grad[j] accumulates 4 rows × grad=1 → 4.0 */
+    OVG_CHECK_NEAR(a->grad[0], 4.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[1], 4.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[2], 4.0f, 1e-5f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+static void test_repeat_rows_bad_shape(void) {
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *a = tg_new(2, 3);  /* rows != 1 */
+        tg_repeat_rows(a, 4);
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "1 x C") != NULL);
+}
+
+/* ── tg_repeat_cols ──────────────────────────────────────────────────────── */
+
+static void test_repeat_cols(void) {
+    /* a[3×1] repeated 4 times → out[3×4] */
+    Tensor *a = tg_new(3, 1);
+    a->persistent = 1;
+    a->data[0] = 5.0f; a->data[1] = 6.0f; a->data[2] = 7.0f;
+
+    Tensor *out = tg_repeat_cols(a, 4);
+    OVG_CHECK_SHAPE(out, 3, 4);
+
+    /* every col of each row must equal a->data[row] */
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 4; j++)
+            OVG_CHECK_NEAR(out->data[i * 4 + j], a->data[i], 1e-5f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    /* each a->grad[i] accumulates 4 cols × grad=1 → 4.0 */
+    OVG_CHECK_NEAR(a->grad[0], 4.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[1], 4.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[2], 4.0f, 1e-5f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+static void test_repeat_cols_bad_shape(void) {
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *a = tg_new(3, 2);  /* cols != 1 */
+        tg_repeat_cols(a, 4);
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "R x 1") != NULL);
+}
+
 static void test_drop_path_rate_schedule(void) {
     /* Verify linear ramp: block 0 gets 0.0, block 3 gets max_rate,
      * intermediates follow rate = max_rate * i / (n_blocks - 1). */
@@ -725,6 +819,10 @@ void run_ops_tests(int *passed, int *failed) {
     RUN_TEST(test_concat_rows_col_mismatch,  passed, failed);
     RUN_TEST(test_row_slice,                 passed, failed);
     RUN_TEST(test_row_slice_oob,             passed, failed);
+    RUN_TEST(test_repeat_rows,               passed, failed);
+    RUN_TEST(test_repeat_rows_bad_shape,     passed, failed);
+    RUN_TEST(test_repeat_cols,               passed, failed);
+    RUN_TEST(test_repeat_cols_bad_shape,     passed, failed);
     RUN_TEST(test_drop_path_rate_schedule,   passed, failed);
     RUN_TEST(test_drop_path_inference_noop,  passed, failed);
 #ifdef OVG_CUDA_ENABLED

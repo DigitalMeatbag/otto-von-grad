@@ -88,6 +88,8 @@ All ops in `tg_ops.c / tg_ops.h`. Tensor struct and lifecycle in `tg_tensor.h`.
 * `tg_concat_cols(parts, n)`     — n × [R x C] → [R x (n*C)]
 * `tg_row_slice(a, start, end)`  — [R x C] → [(end-start) x C]
 * `tg_concat_rows(parts, n)`     — n × [R x C] → [(n*R) x C]; all parts must share the same C
+* `tg_repeat_rows(a, n_rows)`   — [1 x C] → [n_rows x C]; input must be exactly 1 row; backward sums grads across rows
+* `tg_repeat_cols(a, n_cols)`   — [R x 1] → [R x n_cols]; input must be exactly 1 col; backward sums grads across cols
 * `tg_embed(weight, ids, T)`     — gather T rows from weight [V x C] by integer ids → [T x C]
 
 ### Attention / Normalization

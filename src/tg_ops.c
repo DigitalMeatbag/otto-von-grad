@@ -1032,6 +1032,71 @@ Tensor *tg_concat_rows(Tensor **parts, int n_parts) {
     return out;
 }
 
+static void backward_repeat_rows(Tensor *self) {
+    Tensor *a = self->parents[0];
+    int n = self->rows, cols = self->cols;
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) {
+        cuda_repeat_rows_bwd(self->cuda_grad, a->cuda_grad, n, cols);
+        return;
+    }
+#endif
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < cols; j++)
+            a->grad[j] += self->grad[i * cols + j];
+}
+
+static void backward_repeat_cols(Tensor *self) {
+    Tensor *a = self->parents[0];
+    int rows = self->rows, n = self->cols;
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) {
+        cuda_repeat_cols_bwd(self->cuda_grad, a->cuda_grad, rows, n);
+        return;
+    }
+#endif
+    for (int i = 0; i < rows; i++)
+        for (int j = 0; j < n; j++)
+            a->grad[i] += self->grad[i * n + j];
+}
+
+Tensor *tg_repeat_rows(Tensor *a, int n_rows) {
+    if (a->rows != 1)
+        ovg_fatal("tg_repeat_rows: input must be [1 x C], got [%d x %d]", a->rows, a->cols);
+    if (n_rows < 1)
+        ovg_fatal("tg_repeat_rows: n_rows=%d must be >= 1", n_rows);
+    int cols = a->cols;
+    Tensor *out = make_op(n_rows, cols, a, NULL, backward_repeat_rows);
+#ifdef OVG_CUDA_ENABLED
+    if (out->on_cuda) {
+        cuda_repeat_rows_fwd(a->cuda_data, out->cuda_data, n_rows, cols);
+        return out;
+    }
+#endif
+    for (int i = 0; i < n_rows; i++)
+        memcpy(out->data + i * cols, a->data, (size_t)cols * sizeof(float));
+    return out;
+}
+
+Tensor *tg_repeat_cols(Tensor *a, int n_cols) {
+    if (a->cols != 1)
+        ovg_fatal("tg_repeat_cols: input must be [R x 1], got [%d x %d]", a->rows, a->cols);
+    if (n_cols < 1)
+        ovg_fatal("tg_repeat_cols: n_cols=%d must be >= 1", n_cols);
+    int rows = a->rows;
+    Tensor *out = make_op(rows, n_cols, a, NULL, backward_repeat_cols);
+#ifdef OVG_CUDA_ENABLED
+    if (out->on_cuda) {
+        cuda_repeat_cols_fwd(a->cuda_data, out->cuda_data, rows, n_cols);
+        return out;
+    }
+#endif
+    for (int i = 0; i < rows; i++)
+        for (int j = 0; j < n_cols; j++)
+            out->data[i * n_cols + j] = a->data[i];
+    return out;
+}
+
 Tensor *tg_mean_rows(Tensor *a) {
     int rows = a->rows, cols = a->cols;
     Tensor *out = make_op(1, cols, a, NULL, backward_mean_rows);

@@ -120,6 +120,16 @@ void cuda_concat_rows_fwd(const float *src, float *dst,
 void cuda_concat_rows_bwd(const float *g, float *da,
                           int src_rows, int cols, int total_rows, int row_offset);
 
+// repeat_rows: a[1 × cols] → out[n_rows × cols]
+// Backward sums output grad rows into da[1 × cols] via atomicAdd.
+void cuda_repeat_rows_fwd(const float *a, float *out, int n_rows, int cols);
+void cuda_repeat_rows_bwd(const float *g, float *da, int n_rows, int cols);
+
+// repeat_cols: a[rows × 1] → out[rows × n_cols]
+// Backward sums output grad cols into da[rows × 1] via atomicAdd.
+void cuda_repeat_cols_fwd(const float *a, float *out, int rows, int n_cols);
+void cuda_repeat_cols_bwd(const float *g, float *da, int rows, int n_cols);
+
 // cross_entropy: logits[R×C] + targets[R×C] → probs_cache[R×C], loss_out[1]
 // loss_out must be zero-initialised.  After call, copy loss_out to host.
 void cuda_cross_entropy_fwd(const float *logits, const float *targets,
