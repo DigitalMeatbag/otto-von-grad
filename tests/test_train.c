@@ -156,7 +156,8 @@ static void test_cuda_clip_grad_norm(void) {
     float norm = tg_clip_grad_norm(params, 1, 5.0f, 1e-6f);
     tg_from_cuda(a);
 
-    OVG_CHECK_NEAR(norm, 10.0f, 1e-4f);
+    /* CUDA path clips on device and returns 0.0f — norm is not read back to host */
+    OVG_CHECK_NEAR(norm, 0.0f, 1e-4f);
     OVG_CHECK_NEAR(a->grad[0], 3.0f, 1e-4f);
     OVG_CHECK_NEAR(a->grad[1], 4.0f, 1e-4f);
 

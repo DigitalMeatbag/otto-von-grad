@@ -23,18 +23,24 @@ otto-von-grad/
     attention.c / attention.h       — TgSelfAttention, multi-head forward
     tg_block.c / tg_block.h         — TgBlock (pre-norm transformer block)
     tg_transformer.c / tg_transformer.h  — TgTransformer (stack of blocks)
-    tg_gpt.c / tg_gpt.h             — TgGPT (embeddings + transformer + output projection)
+    tg_gpt.c / tg_gpt.h             — TgGPT, TgGPTConfig (embeddings + transformer + output projection)
+    tg_tokenizer.c / tg_tokenizer.h — TgVocab, tg_read_file, tg_vocab_build/encode/decode, tg_tokenize
+    tg_sample.c / tg_sample.h       — tg_sample_argmax, tg_sample_topk, tg_generate
+    tg_checkpoint.c / tg_checkpoint.h — tg_checkpoint_save / tg_checkpoint_load (binary format)
     tg_cuda.cu / tg_cuda.h          — CUDA tensor lifecycle (tg_to_cuda, tg_from_cuda)
     cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops
     ovg_error.c / ovg_error.h       — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
     tg_rng.c / tg_rng.h             — RNG state and seeding (tg_seed, tg_seed_from_entropy, tg_rng_xorshift32)
-    main.c                          — demo: GPT training on candide.txt
+    main.c                          — GPT training demo (candide.txt); saves/resumes checkpoints
   tests/
     ovg_test.h                      — minimal test assertion macros
     test_ops.c                      — ops forward + backward correctness
     test_train.c                    — backward pass, grad accumulation, optimizer step
     test_attention.c                — causal + encoder attention
     test_gpt.c                      — GPT forward shape, param collection
+    test_tokenizer.c                — vocab build, encode/decode round-trip, tokenize
+    test_checkpoint.c               — save/load round-trip, bad magic, count mismatch
+    test_sample.c                   — argmax, top-k determinism, index bounds
     test_main.c                     — test runner entry point
   legacy/
     value.c / value.h               — scalar autograd (learning exercise, not compiled)
@@ -42,6 +48,8 @@ otto-von-grad/
   data/
     text/
       candide.txt                   — corpus for GPT character-level demo
+    checkpoints/
+      model.bin                     — saved after each training run (gitignored)
 ```
 
 ---
@@ -191,11 +199,69 @@ gets `drop_path_rate = max_drop_path_rate * i / (N - 1)` (first block = 0, last 
 File: `tg_gpt.c / tg_gpt.h`
 
 ```c
+typedef struct {
+    int vocab_size, embed_dim, hidden_dim, seq_len, n_blocks, n_heads;
+} TgGPTConfig;
+
 TgGPT   tg_gpt_create(int vocab_size, int embed_dim, int hidden_dim,
                       int seq_len, int n_blocks, int n_heads);
+TgGPT   tg_gpt_create_from_config(const TgGPTConfig *cfg);
 Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids);   // int[seq_len] → [T x V] logits
 int     tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params);
 ```
+
+Param count formula: `3 + n_blocks * 12` (3 global + 12 per block).
+
+---
+
+## Tokenizer
+
+File: `tg_tokenizer.c / tg_tokenizer.h`
+
+Character-level byte vocabulary — every unique byte in the corpus gets an id.
+
+```c
+typedef struct { char chars[256]; int ids[256]; int size; } TgVocab;
+
+char    *tg_read_file(const char *path, int *out_len);             // malloc'd; caller frees
+TgVocab  tg_vocab_build(const char *text, int len);
+int      tg_vocab_encode(const TgVocab *v, char c);                // ovg_fatal on unknown char
+char     tg_vocab_decode(const TgVocab *v, int id);                // ovg_fatal on bad id
+int     *tg_tokenize(const char *text, int len, const TgVocab *v); // malloc'd; caller frees
+```
+
+---
+
+## Sampling
+
+File: `tg_sample.c / tg_sample.h`
+
+```c
+int  tg_sample_argmax(const Tensor *logits, int row);
+int  tg_sample_topk(const Tensor *logits, int row, float temperature, int top_k);
+void tg_generate(TgGPT *g, const TgVocab *v,
+                 const int *context, int ctx_len,
+                 int steps, float temperature, int top_k,
+                 void (*on_token)(char c, void *ud), void *userdata);
+```
+
+`tg_sample_topk`: `top_k=0` uses the full vocabulary; `top_k=1` is deterministic argmax.
+`tg_generate`: sets `tg_training=0` internally; restores it on return.
+
+---
+
+## Checkpoints
+
+File: `tg_checkpoint.c / tg_checkpoint.h`
+
+Binary format: `uint32` magic, `int32` n, then per-tensor `[int32 rows, int32 cols, float* data]`.
+
+```c
+int tg_checkpoint_save(const char *path, Tensor **params, int n);  // 0 on success, -1 on error
+int tg_checkpoint_load(const char *path, Tensor **params, int n);  // silent -1 if file missing
+```
+
+Validates magic, param count, and per-tensor shapes on load.
 
 ---
 
@@ -213,20 +279,28 @@ VS 2026 (MSVC 14.50+) requires `-allow-unsupported-compiler` — already set in 
 
 ## Build Commands
 
-```powershell
-# CPU only
-cmake -B build -G Ninja
-cmake --build build
-.\build\otto_von_grad.exe           # GPT demo (trains on candide.txt)
-.\build\otto_von_grad_tests.exe     # test suite — exits 0 on all-pass
+Default preset: VS2026 generator, CUDA enabled, Release mode, outputs to `build\`.
 
-# With CUDA
-cmake -B build -G Ninja -DOVG_CUDA=ON
-cmake --build build
-.\build\otto_von_grad_tests.exe
+```powershell
+# First configure (fresh clone or after deleting build/)
+cmake --preset default
+
+# Every subsequent build
+cmake --build --preset default
+
+.\build\otto_von_grad.exe           # GPT demo (trains on candide.txt)
+.\build\otto_von_grad_tests.exe     # test suite — 48 tests, exits 0 on all-pass
 ```
 
-On VS 2026 the configure step handles the unsupported-compiler flag automatically.
+Non-default presets:
+
+```powershell
+cmake --preset debug  && cmake --build --preset debug   # Debug + CUDA
+cmake --preset cpu    && cmake --build --preset cpu     # Release, no CUDA
+```
+
+Presets are defined in `CMakePresets.json`. The `-allow-unsupported-compiler` nvcc flag for
+VS 2026 compatibility is handled automatically in CMakeLists.txt.
 
 ---
 
