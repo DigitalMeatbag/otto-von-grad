@@ -36,9 +36,10 @@ void tg_sgd_step(Tensor **params, int n_params, float lr) {
 #endif
     for (int p = 0; p < n_params; p++) {
         Tensor *t = params[p];
-        int n = t->rows * t->cols;
+        int n = tg_numel(t);
+        float *d = TG_DATAF(t);
         for (int i = 0; i < n; i++)
-            t->data[i] -= lr * t->grad[i];
+            d[i] -= lr * t->grad[i];
     }
 }
 
@@ -54,12 +55,13 @@ void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
     float bc2 = 1.0f - powf(beta2, (float)step);
     for (int p = 0; p < n_params; p++) {
         Tensor *t = params[p];
-        int n = t->rows * t->cols;
+        int n = tg_numel(t);
+        float *d = TG_DATAF(t);
         for (int i = 0; i < n; i++) {
             float g = t->grad[i];
             m[p][i] = beta1 * m[p][i] + (1.0f - beta1) * g;
             v[p][i] = beta2 * v[p][i] + (1.0f - beta2) * g * g;
-            t->data[i] -= lr * (m[p][i] / bc1) / (sqrtf(v[p][i] / bc2) + eps);
+            d[i] -= lr * (m[p][i] / bc1) / (sqrtf(v[p][i] / bc2) + eps);
         }
     }
 }
@@ -83,13 +85,13 @@ float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps
         tg_cuda_zero_float(gpu_sumsq);
         for (int p = 0; p < n_params; p++) {
             Tensor *t = params[p];
-            cuda_grad_sumsq(t->cuda_grad, gpu_sumsq, t->rows * t->cols);
+            cuda_grad_sumsq(t->cuda_grad, gpu_sumsq, tg_numel(t));
         }
         /* Clip and scale entirely on GPU — no CPU readback. */
         for (int p = 0; p < n_params; p++) {
             Tensor *t = params[p];
             cuda_clip_scale_grad(gpu_sumsq, max_norm, eps,
-                                 t->cuda_grad, t->rows * t->cols);
+                                 t->cuda_grad, tg_numel(t));
         }
         tg_cuda_free_floats(gpu_sumsq);
         return 0.0f;  /* norm not read back to CPU in CUDA path */
@@ -97,7 +99,7 @@ float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps
 #endif
     for (int p = 0; p < n_params; p++) {
         Tensor *t = params[p];
-        int n = t->rows * t->cols;
+        int n = tg_numel(t);
         for (int i = 0; i < n; i++)
             sumsq += t->grad[i] * t->grad[i];
     }
@@ -110,7 +112,7 @@ float tg_clip_grad_norm(Tensor **params, int n_params, float max_norm, float eps
         float scale = max_norm / (norm + eps);
         for (int p = 0; p < n_params; p++) {
             Tensor *t = params[p];
-            int n = t->rows * t->cols;
+            int n = tg_numel(t);
             for (int i = 0; i < n; i++)
                 t->grad[i] *= scale;
         }
@@ -125,7 +127,7 @@ void tg_adam_step_gpu(Tensor **params, float **m_gpu, float **v_gpu, int n_param
     float bc2 = 1.0f - powf(beta2, (float)step);
     for (int p = 0; p < n_params; p++) {
         Tensor *t = params[p];
-        int n = t->rows * t->cols;
+        int n = tg_numel(t);
         cuda_adam_step(t->cuda_data, m_gpu[p], v_gpu[p], t->cuda_grad,
                        n, lr, bc1, bc2, beta1, beta2, eps);
     }
@@ -155,7 +157,7 @@ void tg_backward(Tensor *root) {
     clear_visited(topo, n);
 
     for (int i = 0; i < n; i++) {
-        int sz = topo[i]->rows * topo[i]->cols;
+        int sz = tg_numel(topo[i]);
 #ifdef OVG_CUDA_ENABLED
         if (topo[i]->on_cuda) {
             tg_cuda_zero_grad(topo[i]);
@@ -172,7 +174,7 @@ void tg_backward(Tensor *root) {
         tg_cuda_set_grad_scalar(root, 1.0f);
     } else {
 #endif
-    for (int i = 0; i < root->rows * root->cols; i++) root->grad[i] = 1.0f;
+    for (int i = 0; i < tg_numel(root); i++) root->grad[i] = 1.0f;
 #ifdef OVG_CUDA_ENABLED
     }
 #endif
@@ -184,7 +186,7 @@ void tg_backward(Tensor *root) {
 void tg_zero_grads(Tensor **params, int n_params) {
     for (int p = 0; p < n_params; p++) {
         Tensor *t = params[p];
-        int sz = t->rows * t->cols;
+        int sz = tg_numel(t);
 #ifdef OVG_CUDA_ENABLED
         if (t->on_cuda) {
             tg_cuda_zero_grad(t);
@@ -209,7 +211,7 @@ void tg_backward_accum(Tensor *root) {
         tg_cuda_set_grad_scalar(root, 1.0f);
     } else {
 #endif
-    for (int i = 0; i < root->rows * root->cols; i++) root->grad[i] = 1.0f;
+    for (int i = 0; i < tg_numel(root); i++) root->grad[i] = 1.0f;
 #ifdef OVG_CUDA_ENABLED
     }
 #endif

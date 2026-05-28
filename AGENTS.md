@@ -2,10 +2,9 @@
 
 # otto-von-grad
 
-A lightweight tensor autograd engine written in C.
+A lightweight tensor autograd engine written in C (C11).
 
-Implements reverse-mode autodiff, multi-head self-attention, transformer blocks,
-and a GPT-style language model — all from scratch with no external ML dependencies.
+Implements reverse-mode autodiff, N-D tensors (up to 4D), batched multi-head self-attention, transformer blocks, a GPT-style language model, and optional CUDA acceleration via cuBLAS. No external ML libraries.
 
 Optional CUDA acceleration via `OVG_CUDA=ON`.
 
@@ -16,28 +15,28 @@ Optional CUDA acceleration via `OVG_CUDA=ON`.
 ```text
 otto-von-grad/
   src/
-    tg_tensor.c / tg_tensor.h       — Tensor struct, lifecycle, print helpers
+    tg_tensor.c / tg_tensor.h       — Tensor struct, lifecycle, print helpers, tg_numel, TG_DATAF
     tg_ops.c / tg_ops.h             — all differentiable ops + backward functions
     tg_train.c / tg_train.h         — tg_backward (topo sort), tg_sgd_step, tg_adam_step
     tg_mlp.c / tg_mlp.h             — TgLinear convenience layer
-    attention.c / attention.h       — TgSelfAttention, multi-head forward
+    attention.c / attention.h       — TgSelfAttention, batched multi-head forward
     tg_block.c / tg_block.h         — TgBlock (pre-norm transformer block)
     tg_transformer.c / tg_transformer.h  — TgTransformer (stack of blocks)
     tg_gpt.c / tg_gpt.h             — TgGPT, TgGPTConfig (embeddings + transformer + output projection)
     tg_tokenizer.c / tg_tokenizer.h — TgVocab, tg_read_file, tg_vocab_build/encode/decode, tg_tokenize
     tg_sample.c / tg_sample.h       — tg_sample_argmax, tg_sample_topk, tg_generate
-    tg_checkpoint.c / tg_checkpoint.h — tg_checkpoint_save / tg_checkpoint_load (binary format)
+    tg_checkpoint.c / tg_checkpoint.h — tg_checkpoint_save / tg_checkpoint_load (binary format v2)
     tg_cuda.cu / tg_cuda.h          — CUDA tensor lifecycle (tg_to_cuda, tg_from_cuda)
-    cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops
+    cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops + cuBLAS dispatch
     ovg_error.c / ovg_error.h       — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
-    tg_rng.c / tg_rng.h             — RNG state and seeding (tg_seed, tg_seed_from_entropy, tg_rng_xorshift32)
+    tg_rng.c / tg_rng.h             — RNG state and seeding (tg_seed, tg_seed_from_entropy)
     main.c                          — GPT training demo (candide.txt); saves/resumes checkpoints
   tests/
     ovg_test.h                      — minimal test assertion macros
-    test_ops.c                      — ops forward + backward correctness
+    test_ops.c                      — ops forward + backward correctness, BF16, N-D matmul
     test_train.c                    — backward pass, grad accumulation, optimizer step
-    test_attention.c                — causal + encoder attention
-    test_gpt.c                      — GPT forward shape, param collection
+    test_attention.c                — causal + encoder attention, batch parity
+    test_gpt.c                      — GPT forward shape (batch=1 and batch=2), param collection
     test_tokenizer.c                — vocab build, encode/decode round-trip, tokenize
     test_checkpoint.c               — save/load round-trip, bad magic, count mismatch
     test_sample.c                   — argmax, top-k determinism, index bounds
@@ -54,49 +53,80 @@ otto-von-grad/
 
 ---
 
+## Tensor Struct
+
+```c
+typedef enum { TG_DTYPE_F32 = 0, TG_DTYPE_BF16 = 1 } TgDtype;
+
+struct Tensor {
+    int          ndim;
+    int          shape[TG_MAX_DIMS];  /* TG_MAX_DIMS = 4 */
+    TgDtype      dtype;               /* TG_DTYPE_F32 (default) or TG_DTYPE_BF16 (CUDA-only) */
+    void        *data;                /* float* for F32; __nv_bfloat16* for BF16 */
+    float       *grad;                /* always FP32 */
+    float       *cache;               /* op-specific scratch (freed by tg_free) */
+    float        aux;                 /* scalar op parameter (eps, axis, scale, etc.) */
+    Tensor      *parents[TG_MAX_PARENTS];
+    int          n_parents;
+    TgBackwardFn backward_fn;
+    int          persistent;
+    int          visited;
+    float       *cuda_data;           /* device data pointer (cast to bfloat16* when BF16) */
+    float       *cuda_grad;           /* device grad pointer (always float*) */
+    float       *cuda_cache;
+    int          on_cuda;
+};
+
+/* TG_MAX_PARENTS = 8, TG_MAX_GRAPH = 8192, TG_MAX_DIMS = 4 */
+
+/* Convenience macros */
+#define TG_DATAF(t)   ((float *)(t)->data)   /* valid when dtype == TG_DTYPE_F32 */
+static inline int tg_numel(const Tensor *t); /* product of shape[0..ndim-1] */
+```
+
+Factory: `tg_new(int ndim, const int shape[])`. All tensors are `TG_DTYPE_F32` and zeroed.
+`ndim < 2` or `ndim > TG_MAX_DIMS` is a fatal error. Scalars are `[1, 1]`, bias vectors are `[1, C]`.
+
+---
+
 ## Tensor Autograd Ops
 
-All ops in `tg_ops.c / tg_ops.h`. Tensor struct and lifecycle in `tg_tensor.h`.
+All ops in `tg_ops.c / tg_ops.h`. Every op has a paired `_backward` function — keep them together.
 
-`TG_MAX_PARENTS = 8`, `TG_MAX_GRAPH = 4096`.
+### Shape / reshape
+
+* `tg_reshape(a, ndim, shape)` — same numel, new shape; ndim ≥ 2; fatal if element count mismatches
+* `tg_expand_dim(a, axis, n)` — shape[axis] must be 1; tiles n times; backward sums over axis
+* `tg_slice(a, axis, start, len)` — contiguous slice; backward scatters gradient back
+* `tg_transpose(a, dim0, dim1)` — swap any two axes; works for any ndim
 
 ### Arithmetic
 
-* `tg_add(a, b)`       — element-wise
-* `tg_sub(a, b)`       — element-wise
-* `tg_mul(a, b)`       — element-wise
-* `tg_pow(a, p)`       — element-wise a^p
-* `tg_scale(a, s)`     — element-wise a * s
-* `tg_matmul(a, b)`    — [m,k] @ [k,n] → [m,n]
-* `tg_transpose(a)`    — [r x c] → [c x r]
+* `tg_add(a, b)` — element-wise; shapes must match exactly (no silent broadcasting)
+* `tg_sub(a, b)` — element-wise
+* `tg_mul(a, b)` — element-wise
+* `tg_pow(a, p)` — element-wise a^p
+* `tg_scale(a, s)` — element-wise a×s
+* `tg_matmul(a, b)` — N-D: `A[..., M, K] @ B[..., K, N] → [..., M, N]`
+  - Same ndim: leading dims must match.
+  - `ndim(b) < ndim(a)`: b broadcast over a's leading dims (e.g. `[B,T,C] @ [C,C_out]`). Only second operand may be lower-ndim.
+  - CUDA: cuBLAS `SgemmStridedBatched` (F32), `cublasGemmEx` (BF16 with `CUBLAS_COMPUTE_32F`).
 
 ### Activations
 
-* `tg_tanh(a)`
-* `tg_relu(a)`
-* `tg_gelu(a)`
+* `tg_tanh(a)`, `tg_relu(a)`, `tg_gelu(a)` — element-wise
 
 ### Reductions
 
-* `tg_sum(a)`          — all elements → [1x1]
-* `tg_mean(a)`         — all elements → [1x1]
-* `tg_mean_rows(a)`    — [R x C] → [1 x C], mean over rows
+* `tg_sum(a)` — all elements → [1,1]
+* `tg_mean(a)` — all elements → [1,1]
+* `tg_mean_rows(a)` — [R×C] → [1×C], mean over rows (2D only)
 
-### Slicing / Combining
+### Attention / normalization
 
-* `tg_slice_cols(a, start, end)` — [R x C] → [R x (end-start)]
-* `tg_concat_cols(parts, n)`     — n × [R x C] → [R x (n*C)]
-* `tg_row_slice(a, start, end)`  — [R x C] → [(end-start) x C]
-* `tg_concat_rows(parts, n)`     — n × [R x C] → [(n*R) x C]; all parts must share the same C
-* `tg_repeat_rows(a, n_rows)`   — [1 x C] → [n_rows x C]; input must be exactly 1 row; backward sums grads across rows
-* `tg_repeat_cols(a, n_cols)`   — [R x 1] → [R x n_cols]; input must be exactly 1 col; backward sums grads across cols
-* `tg_embed(weight, ids, T)`     — gather T rows from weight [V x C] by integer ids → [T x C]
-
-### Attention / Normalization
-
-* `tg_causal_mask(scores)`       — mask future columns in [seq x seq]
-* `tg_layer_norm_rows(a, eps)`   — normalize each row over columns
-* `tg_softmax_rows(a)`           — softmax along each row
+* `tg_causal_mask(scores)` — masks future positions across all leading dims; last two dims must be equal (square)
+* `tg_softmax(a, axis)` — softmax along specified axis; CUDA dispatch for 2D last-axis, CPU general
+* `tg_layer_norm(a, gamma, beta, eps)` — normalizes over `ndim-1` (feature axis); `gamma`/`beta` last dim must match `a`'s last dim; callers pre-expand parameters via `tg_reshape + tg_expand_dim`
 
 ### Regularization
 
@@ -104,7 +134,13 @@ All ops in `tg_ops.c / tg_ops.h`. Tensor struct and lifecycle in `tg_tensor.h`.
 
 ### Loss
 
-* `tg_cross_entropy(logits, targets)` — mean CE [1x1], targets one-hot
+* `tg_cross_entropy(logits, targets)` — mean CE [1×1]; targets one-hot
+* `tg_cross_entropy_no_sync`, `tg_cross_entropy_sparse`, `tg_cross_entropy_sparse_no_sync`
+
+### Embedding / precision
+
+* `tg_embed(weight, ids, T)` — gather T rows from weight [V×C] by integer ids → [T×C]
+* `tg_cast(a, dtype)` — F32↔BF16 precision conversion; BF16 is CUDA-only; `tg_cast(a, a->dtype)` is fatal; backward is FP32 passthrough
 
 ---
 
@@ -117,15 +153,11 @@ void  tg_zero_grads(Tensor **params, int n);           // zero grad arrays for p
 void  tg_sgd_step(Tensor **params, int n, float lr);
 void  tg_adam_step(Tensor **params, float **m, float **v, int n,
                    float lr, int t, float b1, float b2, float eps);
-
-// GPU Adam — moment buffers stay on device
 void  tg_adam_step_gpu(Tensor **params, float **m_gpu, float **v_gpu, int n,
-                       float lr, int t, float b1, float b2, float eps);
-
-void  tg_free_graph(Tensor *root);                     // free non-persistent graph tensors
-
-// tg_clip_grad_norm: CPU path returns the actual gradient norm; CUDA path clips entirely
-// on device and returns 0.0f (the norm is not materialized on the host).
+                       float lr, int t, float b1, float b2, float eps);  // GPU, moment buffers on device
+void  tg_free_graph(Tensor *root);
+float tg_clip_grad_norm(Tensor **params, int n, float max_norm, float eps);
+// CUDA path: clips on device, returns 0.0f
 ```
 
 ---
@@ -134,17 +166,23 @@ void  tg_free_graph(Tensor *root);                     // free non-persistent gr
 
 File: `attention.c / attention.h`
 
+Input shape: `[B, T, C]`. Output shape: `[B, T, C]`.
+
 ```c
 typedef struct {
-    Tensor *Wq, *Wk, *Wv, *Wo;
+    Tensor *Wq, *Wk, *Wv, *Wo;   /* all [C, C] */
     int embed_dim, head_dim, n_heads, causal;
 } TgSelfAttention;
 
 TgSelfAttention tg_attention_create(int embed_dim, int n_heads);          // causal = 1
 TgSelfAttention tg_attention_create_encoder(int embed_dim, int n_heads);  // causal = 0
 void            tg_attention_free(TgSelfAttention *a);
-Tensor         *tg_attention_forward(TgSelfAttention *a, Tensor *X);
+Tensor         *tg_attention_forward(TgSelfAttention *a, Tensor *X);      // X: [B, T, C]
 ```
+
+Forward sequence: `Q/K/V = X @ W[q/k/v]` → `reshape [B,T,H,D]` → `transpose(1,2) → [B,H,T,D]` → `Q @ K^T → [B,H,T,T]` → `scale → causal_mask → softmax(axis=3) → @ V → transpose(1,2) → reshape [B,T,C] → @ Wo`.
+
+No per-head loop — removed in v2. No `n_heads > TG_MAX_PARENTS` ceiling.
 
 ---
 
@@ -152,34 +190,33 @@ Tensor         *tg_attention_forward(TgSelfAttention *a, Tensor *X);
 
 File: `tg_block.c / tg_block.h`
 
-Pre-norm architecture (LayerNorm → Attention → residual → LayerNorm → FFN → residual).
+Pre-norm architecture: LayerNorm → Attention → dropout/drop-path → residual → LayerNorm → FFN → dropout/drop-path → residual.
+
+Accepts `[B, T, C]` input; 2D `[T, C]` is automatically reshaped to `[1, T, C]` internally.
 
 ```c
 typedef struct {
     TgSelfAttention attn;
-    Tensor *gamma1, *beta1;  /* LN affine scale/shift before attention [1 x embed_dim] */
-    Tensor *gamma2, *beta2;  /* LN affine scale/shift before FFN       [1 x embed_dim] */
-    Tensor *W1, *B1, *W2, *B2;
+    Tensor *gamma1, *beta1;  /* LN affine scale/shift before attention  [1, C] */
+    Tensor *gamma2, *beta2;  /* LN affine scale/shift before FFN        [1, C] */
+    Tensor *W1, *B1;         /* FFN weights [C, ffn_dim] and biases [1, ffn_dim] */
+    Tensor *W2, *B2;         /* FFN weights [ffn_dim, C] and biases [1, C] */
     int   embed_dim, hidden_dim;
     float dropout;
-    float drop_path_rate;  /* 0 = disabled; set by tg_transformer_create_encoder */
+    float drop_path_rate;
 } TgBlock;
 
-TgBlock  tg_block_create(int embed_dim, int hidden_dim, int seq_len, int n_heads);
-TgBlock  tg_block_create_encoder(int embed_dim, int hidden_dim, int seq_len, int n_heads);
+TgBlock  tg_block_create(int embed_dim, int hidden_dim, int seq_len, int n_heads);         // causal
+TgBlock  tg_block_create_encoder(int embed_dim, int hidden_dim, int seq_len, int n_heads); // non-causal
 void     tg_block_free(TgBlock *b);
 Tensor  *tg_block_forward(TgBlock *b, Tensor *X);
 ```
 
-`tg_block_create` creates **causal** (GPT-style) blocks; `tg_block_create_encoder` creates non-causal (ViT/BERT-style) blocks. Both initialize `drop_path_rate = 0.0f`.
-
-Note: `B1` and `B2` are expanded to `[seq_len x ...]` — no broadcasting.
+`seq_len` is accepted for API compatibility but no longer affects parameter shapes. `gamma`/`beta` and bias tensors are expanded to `[B, T, C]` at runtime via `tg_reshape + tg_expand_dim` — no static pre-tiling.
 
 ---
 
 ## Transformer Stack
-
-File: `tg_transformer.c / tg_transformer.h`
 
 ```c
 TgTransformer tg_transformer_create(int n_blocks, int embed_dim, int hidden_dim,
@@ -190,15 +227,11 @@ TgTransformer tg_transformer_create_encoder(int n_blocks, int embed_dim, int hid
 Tensor       *tg_transformer_forward(TgTransformer *t, Tensor *X);
 ```
 
-`tg_transformer_create_encoder` applies a linear stochastic-depth schedule: block `i` of `N`
-gets `drop_path_rate = max_drop_path_rate * i / (N - 1)` (first block = 0, last = max). Pass
-`0.0f` to disable drop path entirely.
+`tg_transformer_create_encoder` applies a linear stochastic-depth schedule across blocks.
 
 ---
 
 ## GPT Model
-
-File: `tg_gpt.c / tg_gpt.h`
 
 ```c
 typedef struct {
@@ -208,11 +241,16 @@ typedef struct {
 TgGPT   tg_gpt_create(int vocab_size, int embed_dim, int hidden_dim,
                       int seq_len, int n_blocks, int n_heads);
 TgGPT   tg_gpt_create_from_config(const TgGPTConfig *cfg);
-Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids);   // int[seq_len] → [T x V] logits
+
+/* token_ids: flat [batch_size × seq_len] int array (row-major).
+   Returns logits [batch_size * seq_len, vocab_size]. */
+Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids, int batch_size);
+
 int     tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params);
+// param count = 3 + n_blocks * 12
 ```
 
-Param count formula: `3 + n_blocks * 12` (3 global + 12 per block).
+`PosEmb` is `[T, C]` and expanded to `[B, T, C]` each forward pass via `tg_reshape + tg_expand_dim`. Logits `[B, T, V]` are reshaped to `[B*T, V]` before returning — compatible with `tg_cross_entropy`.
 
 ---
 
@@ -220,7 +258,7 @@ Param count formula: `3 + n_blocks * 12` (3 global + 12 per block).
 
 File: `tg_tokenizer.c / tg_tokenizer.h`
 
-Character-level byte vocabulary — every unique byte in the corpus gets an id.
+Character-level byte vocabulary.
 
 ```c
 typedef struct { char chars[256]; int ids[256]; int size; } TgVocab;
@@ -236,8 +274,6 @@ int     *tg_tokenize(const char *text, int len, const TgVocab *v); // malloc'd; 
 
 ## Sampling
 
-File: `tg_sample.c / tg_sample.h`
-
 ```c
 int  tg_sample_argmax(const Tensor *logits, int row);
 int  tg_sample_topk(const Tensor *logits, int row, float temperature, int top_k);
@@ -247,139 +283,103 @@ void tg_generate(TgGPT *g, const TgVocab *v,
                  void (*on_token)(char c, void *ud), void *userdata);
 ```
 
-`tg_sample_topk`: `top_k=0` uses the full vocabulary; `top_k=1` is deterministic argmax.
-`tg_generate`: sets `tg_training=0` internally; restores it on return.
+`logits` is 2D `[T, vocab_size]`. `tg_generate` sets `tg_training=0` and passes `batch_size=1`.
 
 ---
 
 ## Checkpoints
 
-File: `tg_checkpoint.c / tg_checkpoint.h`
+Binary format v2 (little-endian):
+- `uint32` magic = `0x00475632`
+- `int32` n (param count)
+- Per param: `int32 ndim`, `int32 shape[TG_MAX_DIMS]`, then `numel` floats
 
-Binary format: `uint32` magic, `int32` n, then per-tensor `[int32 rows, int32 cols, float* data]`.
-
-```c
-int tg_checkpoint_save(const char *path, Tensor **params, int n);  // 0 on success, -1 on error
-int tg_checkpoint_load(const char *path, Tensor **params, int n);  // silent -1 if file missing
-```
-
-Validates magic, param count, and per-tensor shapes on load.
+Validates magic, count, and per-tensor shapes on load. Incompatible with v1 checkpoints (magic `0x00475643`).
 
 ---
 
 ## CUDA Support
 
-Enabled via `OVG_CUDA=ON` at configure time. When enabled:
-- `OVG_CUDA_ENABLED` is defined globally (propagates to consumers via CMake `PUBLIC`)
-- All ops have matching CUDA kernels in `cuda_ops.cu`
-- `tg_to_cuda(t)` uploads a tensor to device; `tg_from_cuda(t)` syncs back to host
-- Forward/backward ops automatically dispatch to GPU kernels when `t->on_cuda == 1`
-
-VS 2026 (MSVC 14.50+) requires `-allow-unsupported-compiler` — already set in CMakeLists.txt.
+Enabled via `OVG_CUDA=ON`. When enabled:
+- `OVG_CUDA_ENABLED` is defined globally (propagates to consumers via `PUBLIC`)
+- All ops dispatch to GPU kernels when `t->on_cuda == 1`
+- cuBLAS handles matmul: `SgemmStridedBatched` (N-D F32), `cublasSgemm` (2D F32), `cublasGemmEx` (BF16 with `CUBLAS_COMPUTE_32F`)
+- `tg_to_cuda(t)` uploads F32 tensor to device; `tg_from_cuda(t)` syncs back
+- `tg_cuda_alloc(t)` allocates device data+grad; element size is dtype-aware (2 bytes for BF16, 4 for F32)
+- Every op's forward and backward has a correct CPU path. BF16 tensors are CUDA-only (assert on CPU).
 
 ---
 
 ## Build Commands
 
-Default preset: VS2026 generator, CUDA enabled, Release mode, outputs to `build\`.
-
 ```powershell
-# First configure (fresh clone or after deleting build/)
-cmake --preset default
-
-# Every subsequent build
-cmake --build --preset default
-
-.\build\otto_von_grad.exe           # GPT demo (trains on candide.txt)
-.\build\otto_von_grad_tests.exe     # test suite — 48 tests, exits 0 on all-pass
+cmake --preset default             # configure: VS2026, CUDA, Release
+cmake --build --preset default     # build
+.\build\otto_von_grad.exe          # GPT demo (trains on candide.txt)
+.\build\otto_von_grad_tests.exe    # test suite — 59 tests, exits 0 on all-pass
 ```
 
 Non-default presets:
 
 ```powershell
-cmake --preset debug  && cmake --build --preset debug   # Debug + CUDA
-cmake --preset cpu    && cmake --build --preset cpu     # Release, no CUDA
+cmake --preset debug   && cmake --build --preset debug   # Debug + CUDA
+cmake --preset cpu     && cmake --build --preset cpu     # Release, no CUDA
 ```
-
-Presets are defined in `CMakePresets.json`. The `-allow-unsupported-compiler` nvcc flag for
-VS 2026 compatibility is handled automatically in CMakeLists.txt.
 
 ---
 
 ## RNG and Seeding
 
-File: `tg_rng.c / tg_rng.h`
-
 ```c
 void     tg_seed(uint32_t seed);       // seed rand() + xorshift32, log seed to stdout
 void     tg_seed_from_entropy(void);   // seed from OS entropy, then call tg_seed()
-uint32_t tg_rng_xorshift32(void);      // xorshift32 step (used internally by tg_dropout)
-float    tg_rng_uniform(void);         // uniform float in [0, 1) — wraps xorshift32
+uint32_t tg_rng_xorshift32(void);      // raw xorshift32 (used internally by tg_dropout)
+float    tg_rng_uniform(void);         // uniform float in [0, 1)
 ```
-
-`tg_seed_from_entropy()` picks the right source per platform (`rand_s` on Windows,
-`arc4random` on Apple, `/dev/urandom` on Linux). The chosen seed is always logged:
-
-```
-[ovg] rng seed: 0x5f3759df
-```
-
-To reproduce a run, replace `tg_seed_from_entropy()` with `tg_seed(0x5f3759df)`.
-
-Note: `rand()` is process-global. For exact replay, `tg_seed()` must be the only
-`srand()` call in the process and must occur before any RNG use.
 
 ---
 
 ## Error Handling
 
-All fatal errors in the library call `ovg_fatal()` (in `ovg_error.h/c`) instead of `exit(1)` inline.
-Consumers can install a pre-exit hook:
-
 ```c
 #include "ovg_error.h"
-ovg_set_fatal_handler(my_logger);  // call before any threads are spawned (not thread-safe)
+ovg_set_fatal_handler(my_handler);  // install pre-exit hook (not thread-safe)
 ```
 
-The hook receives the formatted message string. `ovg_fatal` **always calls `exit(1)` after the
-hook returns** — the handler is a logging/capture hook, not a recovery path.
-
-Tests use `setjmp`/`longjmp` to capture fatal calls in-process. See `tests/test_ops.c` for the
-pattern. Call `ovg_set_fatal_handler(NULL)` after each capture block to restore the default and
-reset the re-entrancy guard.
+`ovg_fatal()` always calls `exit(1)` after the hook returns. Tests use `setjmp`/`longjmp` to capture fatal calls in-process.
 
 ---
 
 ## Include Style
 
-New code should include the specific sub-header it needs:
-
 ```c
 #include "tg_ops.h"    // ops + Tensor struct (via tg_tensor.h)
-#include "tg_train.h"  // tg_backward, tg_sgd_step (+ Tensor struct)
+#include "tg_train.h"  // tg_backward, optimizers (+ Tensor struct)
 ```
-
-Files that only perform forward passes (no backward) need only `tg_ops.h`.
 
 ---
 
 ## Coding Style
 
-* Straightforward C (C11). No OOP patterns, no macro-heavy metaprogramming.
-* Prefer explicit tensor shapes in comments.
-* Shape mismatches should fail loudly — no silent broadcasting.
-* Keep memory ownership obvious. `persistent = 1` marks tensors that survive `tg_free_graph`.
-* Correctness and inspectability over performance.
+* C11. No OOP patterns, no macro-heavy metaprogramming.
+* Tensors are N-D up to `TG_MAX_DIMS = 4`. Shape convention throughout: `[B, T, C]` for sequences, `[B, H, T, D]` for attention scores.
+* No silent broadcasting — shape mismatches must fail loudly via `ovg_fatal`.
+* Every op in `tg_ops.c` has a paired `_backward` function — keep them together.
+* `persistent = 1` marks parameters. `tg_free_graph` handles intermediates.
+* When adding CUDA kernels, preserve the symmetric CPU fallback path.
+* Correctness and readability over performance.
 
 ---
 
 ## Known Constraints
 
-* **No broadcasting** — bias tensors are manually expanded to full shapes.
-* **2D tensors only** — all ops assume `[rows x cols]`.
-* **Eager dispatch** — one kernel launch per op; no graph compilation or kernel fusion.
-* **Performance** is not the current priority. Correctness and readability are.
-* **topo_sort is recursive** — stack depth equals graph depth. Safe for current models (depth ~200). If `TG_MAX_GRAPH` is raised and model depth grows large, convert to iterative.
+* **No silent broadcasting.** Use `tg_expand_dim` (and `tg_reshape` to cross ndim boundaries) to make shapes explicit.
+* **BF16 is CUDA-only.** `tg_cast` to BF16 asserts on CPU. Non-matmul ops operate on F32; cast back before layernorm, gelu, etc.
+* **Static graph per step.** No dynamic computation graphs; `tg_free_graph` after each step.
+* **`tg_cross_entropy` is 2D.** Reshape `[B, T, V]` logits to `[B*T, V]` before CE (`tg_gpt_forward` does this automatically).
+* **`tg_mean_rows` is 2D-only.** Takes `[R, C]`, returns `[1, C]`.
+* **`topo_sort` is recursive.** Safe at current model depths (~200). If `TG_MAX_GRAPH` needs raising significantly, convert to iterative.
+* **Eager dispatch.** One kernel launch per op; no graph compilation or kernel fusion.
 
 ---
 
@@ -390,6 +390,9 @@ When modifying code:
 * Preserve explicit tensor math — do not hide operations behind abstractions.
 * Preserve the backward function paired with each op in `tg_ops.c`.
 * Do not introduce external ML libraries.
-* Do not add broadcasting without explicit discussion — it changes semantics for existing callers.
+* Do not add silent broadcasting — it changes semantics for all callers.
 * When adding a new op, add both the forward function and its `_backward` counterpart.
-* When adding a CUDA kernel, ensure the CPU path remains correct and the dispatch logic in the op is symmetric.
+* When adding a CUDA kernel, ensure the CPU path remains correct and the dispatch logic is symmetric.
+* `tg_block_forward` reshapes 2D `[T, C]` input to `[1, T, C]` at the start — the whole block operates in 3D. Attention output is `[B, T, C]` (3D), not `[B*T, C]`.
+* `tg_gpt_forward` returns `[B*T, V]` (2D), ready for cross-entropy.
+* The checkpoint magic is `0x00475632` (v2). The v1 magic `0x00475643` is rejected on load.

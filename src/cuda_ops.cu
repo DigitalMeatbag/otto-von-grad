@@ -2,6 +2,79 @@
 
 #include "cuda_ops.h"
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include <cuda_bf16.h>
+
+// ── cuBLAS handle (lazy init) ─────────────────────────────────────────────────
+
+static cublasHandle_t g_cublas = NULL;
+
+static cublasHandle_t get_cublas(void) {
+    if (!g_cublas) cublasCreate(&g_cublas);
+    return g_cublas;
+}
+
+// ── Batched SGEMM via cuBLAS ──────────────────────────────────────────────────
+
+/* cuBLAS uses column-major order. For row-major C = op(A) @ op(B), pass operands
+   in reversed order: cublasSgemm(…, N, op_B_col, M, op_A_col, …, B, …, A, …, C, …)
+   where op_x_col is the transpose of what we'd use in row-major notation.
+   Concretely:
+     row-major A[M,K] @ B[K,N] = C[M,N]
+     cuBLAS:  Sgemm(N, CUBLAS_OP_N, M, CUBLAS_OP_N, K, 1, B, N, A, K, 0, C, N)
+   For op_A='T' (we want A^T[K,M] @ B[K,N]):
+     row-major A^T: effectively A read with rows/cols swapped
+     cuBLAS:  Sgemm(N, CUBLAS_OP_N, K, CUBLAS_OP_T, M, 1, B, N, A, M, 0, C, N)   ← wrong
+   Let me be precise with the standard formula.
+
+   Row-major convention: we want OUT = op_A(A) @ op_B(B).
+   cuBLAS column-major trick: OUT^T = op_B(B)^T @ op_A(A)^T
+   which in cuBLAS is: gemm(op_B_col, op_A_col, N, M, K, ..., B_ptr, ldb, A_ptr, lda, ..., C_ptr, ldc)
+   where op_x_col flips N↔T relative to what we pass.
+*/
+void cuda_batched_sgemm(char op_A, char op_B,
+                        const float *A, const float *B, float *C,
+                        int batch, int M, int K, int N,
+                        long strideA, long strideB, long strideC,
+                        float alpha, float beta) {
+    cublasHandle_t h = get_cublas();
+
+    /* Dimensions for the cuBLAS call (column-major, B first):
+       We compute C^T = op_B(B)^T @ op_A(A)^T
+       cuBLAS sees:
+         op1 (on B) = flip(op_B)   "N"↔"T"
+         op2 (on A) = flip(op_A)
+         rows of cuBLAS output = N (cols of row-major output)
+         cols of cuBLAS output = M (rows of row-major output)
+         inner k = K
+       Leading dimension of B: if op_B='N', ldb = N (cols of B); if 'T', ldb = K
+       Leading dimension of A: if op_A='N', lda = K (cols of A); if 'T', lda = M
+       Leading dimension of C: N (cols of row-major C)
+    */
+    cublasOperation_t cubop_A = (op_A == 'T') ? CUBLAS_OP_T : CUBLAS_OP_N;
+    cublasOperation_t cubop_B = (op_B == 'T') ? CUBLAS_OP_T : CUBLAS_OP_N;
+
+    /* In cuBLAS column-major for C = op(A)_rm @ op(B)_rm:
+       call: gemm(flip(op_B), flip(op_A), N, M, K, B_ptr, ldb, A_ptr, lda, C_ptr, N)
+       ldb = (op_B=='N') ? N : K
+       lda = (op_A=='N') ? K : M                                                 */
+    int lda = (op_A == 'N') ? K : M;
+    int ldb = (op_B == 'N') ? N : K;
+    int ldc = N;
+
+    cublasOperation_t transa = (cubop_B == CUBLAS_OP_N) ? CUBLAS_OP_N : CUBLAS_OP_T;
+    cublasOperation_t transb = (cubop_A == CUBLAS_OP_N) ? CUBLAS_OP_N : CUBLAS_OP_T;
+
+    cublasSgemmStridedBatched(h,
+        transa, transb,
+        N, M, K,
+        &alpha,
+        B, ldb, (long long)strideB,
+        A, lda, (long long)strideA,
+        &beta,
+        C, ldc, (long long)strideC,
+        batch);
+}
 
 // ── Tiled GEMM ───────────────────────────────────────────────────────────────
 //
@@ -263,6 +336,25 @@ __global__ void gelu_bwd_k(const float *a, const float *g, float *da, int n) {
 // ── Host launchers — element-wise ────────────────────────────────────────────
 
 static int blocks(int n) { return (n + BLOCK - 1) / BLOCK; }
+
+// ── BF16 ←→ F32 conversion kernels ───────────────────────────────────────────
+
+__global__ void cast_f32_to_bf16_k(const float *in, __nv_bfloat16 *out, int n) {
+    int i = blockIdx.x * BLOCK + threadIdx.x;
+    if (i < n) out[i] = __float2bfloat16(in[i]);
+}
+__global__ void cast_bf16_to_f32_k(const __nv_bfloat16 *in, float *out, int n) {
+    int i = blockIdx.x * BLOCK + threadIdx.x;
+    if (i < n) out[i] = __bfloat162float(in[i]);
+}
+
+void cuda_cast_f32_to_bf16(const float *in, void *out_bf16, int n) {
+    cast_f32_to_bf16_k<<<blocks(n),BLOCK>>>(in, (__nv_bfloat16 *)out_bf16, n);
+}
+void cuda_cast_bf16_to_f32(const void *in_bf16, float *out, int n) {
+    cast_bf16_to_f32_k<<<blocks(n),BLOCK>>>((const __nv_bfloat16 *)in_bf16, out, n);
+}
+
 
 void cuda_add_fwd(const float *a, const float *b, float *o, int n)
     { add_fwd_k<<<blocks(n),BLOCK>>>(a,b,o,n); }
@@ -1039,5 +1131,108 @@ void cuda_scale_grad(float *grad, float scale, int n)
 void cuda_clip_scale_grad(const float *gpu_sumsq, float max_norm, float eps,
                            float *grad, int n)
     { clip_scale_grad_k<<<blocks(n),BLOCK>>>(gpu_sumsq, max_norm, eps, grad, n); }
+
+// ── BF16 batched GEMM ─────────────────────────────────────────────────────────
+// A, B: __nv_bfloat16 data (passed as void*), C: float output.
+// Uses cublasGemmEx with CUDA_R_16BF inputs and CUBLAS_COMPUTE_32F accumulation.
+
+void cuda_batched_sgemm_bf16(char op_A, char op_B,
+                              const void *A, const void *B, float *C,
+                              int batch, int M, int K, int N,
+                              long strideA, long strideB, long strideC,
+                              float alpha, float beta) {
+    cublasHandle_t h = get_cublas();
+
+    cublasOperation_t transa = (op_B == 'T') ? CUBLAS_OP_T : CUBLAS_OP_N;
+    cublasOperation_t transb = (op_A == 'T') ? CUBLAS_OP_T : CUBLAS_OP_N;
+
+    int lda = (op_A == 'N') ? K : M;
+    int ldb = (op_B == 'N') ? N : K;
+    int ldc = N;
+
+    cublasGemmStridedBatchedEx(h,
+        transa, transb,
+        N, M, K,
+        &alpha,
+        B, CUDA_R_16BF, ldb, (long long)strideB,
+        A, CUDA_R_16BF, lda, (long long)strideA,
+        &beta,
+        C, CUDA_R_32F,  ldc, (long long)strideC,
+        batch,
+        CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+}
+
+// ── expand_dim ───────────────────────────────────────────────────────────────
+// a has shape [outer × 1 × inner]; out has shape [outer × n × inner].
+// Each output element [o, i, s] = a[o, 0, s].
+
+__global__ void expand_dim_fwd_k(const float *a, float *out,
+                                  int outer, int inner, int n) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= outer * n * inner) return;
+    int o = idx / (n * inner);
+    int s = idx % inner;
+    out[idx] = a[o * inner + s];
+}
+
+// Backward: sum output grad over the n axis into a.grad.
+__global__ void expand_dim_bwd_k(const float *g, float *da,
+                                  int outer, int inner, int n) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= outer * inner) return;
+    int o = idx / inner, s = idx % inner;
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) sum += g[(o * n + i) * inner + s];
+    atomicAdd(&da[o * inner + s], sum);
+}
+
+void cuda_expand_dim_fwd(const float *a, float *out,
+                         int outer, int inner, int n) {
+    int total = outer * n * inner;
+    expand_dim_fwd_k<<<blocks(total),BLOCK>>>(a, out, outer, inner, n);
+}
+void cuda_expand_dim_bwd(const float *g, float *da,
+                         int outer, int inner, int n) {
+    int total = outer * inner;
+    expand_dim_bwd_k<<<blocks(total),BLOCK>>>(g, da, outer, inner, n);
+}
+
+// ── slice ─────────────────────────────────────────────────────────────────────
+// a has logical shape [outer × a_axis × inner]; out has [outer × len × inner].
+// Source offset along axis: start.
+
+__global__ void slice_fwd_k(const float *a, float *out,
+                             int outer, int a_axis, int inner, int start, int len) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= outer * len * inner) return;
+    int o   = idx / (len * inner);
+    int rem = idx % (len * inner);
+    int i   = rem / inner;
+    int s   = rem % inner;
+    out[idx] = a[(o * a_axis + (start + i)) * inner + s];
+}
+
+__global__ void slice_bwd_k(const float *g, float *da,
+                             int outer, int a_axis, int inner, int start, int len) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= outer * len * inner) return;
+    int o   = idx / (len * inner);
+    int rem = idx % (len * inner);
+    int i   = rem / inner;
+    int s   = rem % inner;
+    atomicAdd(&da[(o * a_axis + (start + i)) * inner + s], g[idx]);
+}
+
+void cuda_slice_fwd(const float *a, float *out,
+                    int outer, int a_axis, int inner, int start, int len) {
+    int total = outer * len * inner;
+    slice_fwd_k<<<blocks(total),BLOCK>>>(a, out, outer, a_axis, inner, start, len);
+}
+void cuda_slice_bwd(const float *g, float *da,
+                    int outer, int a_axis, int inner, int start, int len) {
+    int total = outer * len * inner;
+    slice_bwd_k<<<blocks(total),BLOCK>>>(g, da, outer, a_axis, inner, start, len);
+}
 
 #endif // OVG_CUDA_ENABLED

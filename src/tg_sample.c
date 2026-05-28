@@ -7,28 +7,31 @@
 #include <math.h>
 
 int tg_sample_argmax(const Tensor *logits, int row) {
-    if (!logits || row < 0 || row >= logits->rows)
+    if (!logits || logits->ndim != 2 || row < 0 || row >= logits->shape[0])
         ovg_fatal("tg_sample_argmax: invalid arguments");
+    int V = logits->shape[1];
+    const float *d = TG_DATAF(logits);
     int   best     = 0;
-    float best_val = logits->data[row * logits->cols];
-    for (int j = 1; j < logits->cols; j++) {
-        float val = logits->data[row * logits->cols + j];
+    float best_val = d[row * V];
+    for (int j = 1; j < V; j++) {
+        float val = d[row * V + j];
         if (val > best_val) { best = j; best_val = val; }
     }
     return best;
 }
 
 int tg_sample_topk(const Tensor *logits, int row, float temperature, int top_k) {
-    if (!logits || row < 0 || row >= logits->rows)
+    if (!logits || logits->ndim != 2 || row < 0 || row >= logits->shape[0])
         ovg_fatal("tg_sample_topk: invalid arguments");
     if (temperature <= 0.0f)
         ovg_fatal("tg_sample_topk: temperature must be > 0");
 
-    int V = logits->cols;
+    int V = logits->shape[1];
+    const float *d = TG_DATAF(logits);
     if (top_k <= 0 || top_k > V) top_k = V;
     if (top_k == 1) return tg_sample_argmax(logits, row);
 
-    const float *src = logits->data + row * V;
+    const float *src = d + row * V;
 
     float *scores = malloc((size_t)V * sizeof(float));
     int   *idx    = malloc((size_t)V * sizeof(int));
@@ -36,7 +39,6 @@ int tg_sample_topk(const Tensor *logits, int row, float temperature, int top_k) 
 
     for (int j = 0; j < V; j++) { scores[j] = src[j] / temperature; idx[j] = j; }
 
-    /* Partial selection sort to surface the top_k highest scores */
     for (int k = 0; k < top_k; k++) {
         int best_j = k;
         for (int j = k + 1; j < V; j++)
@@ -44,7 +46,6 @@ int tg_sample_topk(const Tensor *logits, int row, float temperature, int top_k) 
         int tmp = idx[k]; idx[k] = idx[best_j]; idx[best_j] = tmp;
     }
 
-    /* Softmax over the top_k candidates, numerically stable */
     float max_s = scores[idx[0]];
     for (int k = 1; k < top_k; k++)
         if (scores[idx[k]] > max_s) max_s = scores[idx[k]];
@@ -55,10 +56,9 @@ int tg_sample_topk(const Tensor *logits, int row, float temperature, int top_k) 
         sum += scores[k];
     }
 
-    /* Multinomial sample */
     float r   = tg_rng_uniform() * sum;
     float cum = 0.0f;
-    int result = idx[top_k - 1];  /* fallback for fp rounding at tail */
+    int result = idx[top_k - 1];
     for (int k = 0; k < top_k; k++) {
         cum += scores[k];
         if (r < cum) { result = idx[k]; break; }
@@ -87,7 +87,7 @@ void tg_generate(TgGPT *g, const TgVocab *v,
     tg_training = 0;
 
     for (int s = 0; s < steps; s++) {
-        Tensor *logits = tg_gpt_forward(g, ctx);
+        Tensor *logits = tg_gpt_forward(g, ctx, 1);
         int next = (top_k == 1 || temperature <= 0.0f)
                  ? tg_sample_argmax(logits, g->seq_len - 1)
                  : tg_sample_topk(logits, g->seq_len - 1, temperature, top_k);

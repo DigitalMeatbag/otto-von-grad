@@ -22,13 +22,15 @@ static void ensure_dir(const char *path) { mkdir(path, 0755); }
 #define CHECKPOINT_PATH "data/checkpoints/model.bin"
 
 static Tensor *make_one_hot(const int *ids, int n, int n_classes) {
-    Tensor *out = tg_new(n, n_classes);
+    int shape[2] = {n, n_classes};
+    Tensor *out = tg_new(2, shape);
     tg_fill(out, 0.0f);
+    float *d = TG_DATAF(out);
     for (int i = 0; i < n; i++) {
         if (ids[i] < 0 || ids[i] >= n_classes) {
             fprintf(stderr, "make_one_hot: id %d out of range\n", ids[i]); exit(1);
         }
-        out->data[i * n_classes + ids[i]] = 1.0f;
+        d[i * n_classes + ids[i]] = 1.0f;
     }
     return out;
 }
@@ -101,7 +103,7 @@ int main(void) {
     float **v_buf = calloc((size_t)n_params, sizeof(float *));
     if (!m_buf || !v_buf) { fprintf(stderr, "out of memory\n"); exit(1); }
     for (int i = 0; i < n_params; i++) {
-        size_t nel = (size_t)params[i]->rows * params[i]->cols;
+        size_t nel = (size_t)tg_numel(params[i]);
         m_buf[i]   = calloc(nel, sizeof(float));
         v_buf[i]   = calloc(nel, sizeof(float));
         if (!m_buf[i] || !v_buf[i]) { fprintf(stderr, "out of memory\n"); exit(1); }
@@ -120,14 +122,14 @@ int main(void) {
         }
 
         Tensor *tgt_hot = make_one_hot(targets, T, vocab.size);
-        Tensor *logits  = tg_gpt_forward(&gpt, inputs);
+        Tensor *logits  = tg_gpt_forward(&gpt, inputs, 1);
         Tensor *loss    = tg_cross_entropy(logits, tgt_hot);
 
         tg_backward(loss);
         tg_adam_step(params, m_buf, v_buf, n_params, lr, step, beta1, beta2, adam_eps);
 
         if (step == 1 || step % 200 == 0) {
-            float train_loss = loss->data[0];
+            float train_loss = TG_DATAF(loss)[0];
 
             /* Val loss: one window sampled from the held-out set */
             tg_training = 0;
@@ -137,10 +139,10 @@ int main(void) {
                 targets[i] = all_tokens[vstart + i + 1];
             }
             Tensor *vhot  = make_one_hot(targets, T, vocab.size);
-            Tensor *vlog  = tg_gpt_forward(&gpt, inputs);
+            Tensor *vlog  = tg_gpt_forward(&gpt, inputs, 1);
             Tensor *vloss = tg_cross_entropy(vlog, vhot);
             printf("step %4d/%d  train: %.6f  val: %.6f\n",
-                   step, steps, train_loss, vloss->data[0]);
+                   step, steps, train_loss, TG_DATAF(vloss)[0]);
             tg_free_graph(vloss);
             tg_training = 1;
         }
@@ -155,9 +157,9 @@ int main(void) {
         targets[i] = all_tokens[i + 1];
     }
     Tensor *eval_tgt_hot = make_one_hot(targets, T, vocab.size);
-    Tensor *eval_logits  = tg_gpt_forward(&gpt, inputs);
+    Tensor *eval_logits  = tg_gpt_forward(&gpt, inputs, 1);
     Tensor *eval_loss    = tg_cross_entropy(eval_logits, eval_tgt_hot);
-    printf("final eval loss: %.6f\n", eval_loss->data[0]);
+    printf("final eval loss: %.6f\n", TG_DATAF(eval_loss)[0]);
 
     printf("generated: ");
     for (int i = 0; i < T; i++) putchar(tg_vocab_decode(&vocab, inputs[i]));
