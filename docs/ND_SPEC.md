@@ -82,20 +82,20 @@ typedef struct Tensor {
     int      ndim;
     int      shape[TG_MAX_DIMS];
     TgDtype  dtype;
-    float   *data;
-    float   *grad;
+    void    *data;   /* float * for TG_DTYPE_F32; __nv_bfloat16 * for TG_DTYPE_BF16 */
+    float   *grad;   /* always FP32; NULL for non-differentiable tensors */
     int      persistent;
     int      on_cuda;
     /* backward linkage and parent tracking: unchanged from v1 */
 } Tensor;
 ```
 
-`rows` and `cols` are removed. There are no aliases, no deprecated wrappers.
+`rows` and `cols` are removed. There are no aliases, no deprecated wrappers. `data` is `void *` because BF16 tensors store 2-byte elements; callers cast to `float *` or `__nv_bfloat16 *` based on `dtype`. `grad` is always `float *` (FP32) regardless of `dtype` — standard mixed-precision practice; the optimizer always reads FP32 gradients.
 
 ### 4.2 — No Silent Broadcasting
 The v1 rule holds: shape mismatches must fail loudly. OVG does not silently broadcast.
 
-The v1 ops `tg_repeat_rows` and `tg_repeat_cols` are removed and replaced by `tg_expand_dim(Tensor *a, int axis, int n)`, which expands `a` along `axis` from size 1 to size `n`. The target axis must have size 1; any other size is a fatal error. This generalizes to arbitrary dimensions with no 2D-specific assumptions. The batch dimension is **not** a special case — a `[1, H, T, D]` tensor is not automatically compatible with a `[B, H, T, D]` tensor. Explicit expansion via `tg_expand_dim` is required. Returns a new tensor with its own allocation; input data is tiled `n` times along `axis`. Backward: sums `out->grad` over `axis`, accumulating into `a->grad` (contracting that axis back to size 1).
+The v1 ops `tg_repeat_rows` and `tg_repeat_cols` are removed and replaced by `tg_expand_dim(Tensor *a, int axis, int n)`, which expands `a` along `axis` from size 1 to size `n`. The target axis must have size 1; any other size is a fatal error. An `axis` outside `[0, ndim-1]` is also a fatal error. This generalizes to arbitrary dimensions with no 2D-specific assumptions. The batch dimension is **not** a special case — a `[1, H, T, D]` tensor is not automatically compatible with a `[B, H, T, D]` tensor. Explicit expansion via `tg_expand_dim` is required. Returns a new tensor with its own allocation; input data is tiled `n` times along `axis`. Backward: sums `out->grad` over `axis`, accumulating into `a->grad` (contracting that axis back to size 1).
 
 To cross an ndim boundary before expanding (e.g., broadcasting `[1, C]` parameters over a `[B, T, C]` input), use `tg_reshape` first: `[1, C]` → `tg_reshape` → `[1, 1, C]` → `tg_expand_dim(axis=0, n=B)` → `[B, 1, C]` → `tg_expand_dim(axis=1, n=T)` → `[B, T, C]`.
 
@@ -140,7 +140,7 @@ The BF16 path is in scope for v2 and ships alongside the N-D migration — it is
 
 The field type is `TgDtype`, an enum with two values: `TG_DTYPE_F32` (default) and `TG_DTYPE_BF16`. The `DTYPE_` segment is required — C enum members are global-scope and `TG_F32` is a collision risk. The CPU path only ever holds `TG_DTYPE_F32`; `TG_DTYPE_BF16` is only valid on CUDA tensors (Ampere / sm_80 or newer) and will assert otherwise. By 2026, Ampere is the de facto baseline for consumer ML hardware; the RTX 4070 Super (sm_89, Ada Lovelace) fully supports it.
 
-**Dtype conversion:** precision changes are explicit graph nodes via `tg_cast(Tensor *a, TgDtype dtype)`. There is no dtype-at-construction argument to `tg_new` — all tensors are allocated as `TG_DTYPE_F32` and cast explicitly when needed. This keeps dtype changes visible in the computation graph. Returns a new tensor with its own allocation. The backward pass through `tg_cast` converts the incoming gradient to the input tensor's dtype. Calling `tg_cast(a, a->dtype)` is a fatal error.
+**Dtype conversion:** precision changes are explicit graph nodes via `tg_cast(Tensor *a, TgDtype dtype)`. There is no dtype-at-construction argument to `tg_new` — all tensors are allocated as `TG_DTYPE_F32` and cast explicitly when needed. This keeps dtype changes visible in the computation graph. Returns a new tensor with its own allocation. Backward: accumulates `out->grad` (FP32) directly into `a->grad` (also FP32) — no dtype conversion is performed because `grad` is always FP32. Calling `tg_cast(a, a->dtype)` is a fatal error.
 
 BF16 has the same exponent range as FP32 — gradients do not underflow in the backward pass. Loss scaling is not required. `tg_backward` (seed = 1.0f) is used unchanged for both FP32 and BF16 paths.
 
@@ -198,7 +198,7 @@ Everything in the current v1 API carries forward unless explicitly displaced by 
 
 - All ops in `tg_ops.h` (elementwise, matmul, attention, norm, loss, etc.), with the following exceptions and changes:
   - **Removed:** `tg_repeat_rows`, `tg_repeat_cols` (replaced by `tg_expand_dim` — see §4.2). `tg_concat_cols`, `tg_concat_rows` — hard cut, no N-D replacement. `tg_slice_cols` — hard cut; replaced by `tg_slice` (see New ops below).
-  - **Generalized:** `tg_transpose(a)` → `tg_transpose(a, dim0, dim1)` (swap any two axes; old one-argument form is a hard cut, no shim). Backward: `tg_transpose(out->grad, dim0, dim1)` accumulated into `a->grad`. `tg_softmax_rows(a)` → `tg_softmax(a, axis)` (softmax along a specified axis). Backward: as v1 `tg_softmax_rows`, generalized to the specified axis. `tg_causal_mask(a)` — signature unchanged; implementation generalizes from 2D `[T, T]` to N-D, masking the last two dimensions uniformly across all leading dims. Backward: unchanged from v1. `tg_layer_norm` normalizes over `ndim-1` (the feature/channel axis) by design — no `axis` parameter. LayerNorm is defined over the feature dimension and the axis does not vary at call sites; an `axis` parameter would be misleading API surface with no real use case. Backward: unchanged from v1, applied over axis `ndim-1`.
+  - **Generalized:** `tg_transpose(a)` → `tg_transpose(a, dim0, dim1)` (swap any two axes; old one-argument form is a hard cut, no shim). Backward: `tg_transpose(out->grad, dim0, dim1)` accumulated into `a->grad`. `tg_softmax_rows(a)` → `tg_softmax(a, axis)` (softmax along a specified axis). Backward: as v1 `tg_softmax_rows`, generalized to the specified axis. `tg_causal_mask(a)` — signature unchanged; implementation generalizes from 2D `[T, T]` to N-D, masking the last two dimensions uniformly across all leading dims. Backward: propagates gradient unchanged at unmasked positions, zeroes it at masked positions — applied uniformly across all leading dims. `tg_layer_norm(Tensor *a, Tensor *gamma, Tensor *beta, float eps)` — normalizes over `ndim-1` (the feature/channel axis) by design; no `axis` parameter. `gamma` and `beta` must match `a`'s shape; callers are responsible for pre-expanding from `[1, C]` via `tg_reshape` + `tg_expand_dim` (see `TgBlock` note below). LayerNorm is defined over the feature dimension and the axis does not vary at call sites; an `axis` parameter would be misleading API surface with no real use case. Backward: unchanged from v1, applied over axis `ndim-1`.
   - **New:** `tg_reshape(Tensor *a, int ndim, const int shape[])` (see §4.1). `tg_expand_dim(Tensor *a, int axis, int n)` (see §4.2). `tg_cast(Tensor *a, TgDtype dtype)` (see §5.2). `tg_scale(Tensor *a, float scalar)` — multiply every element of `a` by `scalar`. Returns a new tensor. Backward: `a->grad += scalar * out->grad`. `tg_slice(Tensor *a, int axis, int start, int len)` — extract a contiguous slice of `len` elements starting at `start` along `axis`. Returns a new tensor with its own allocation; output shape is `a->shape` with `shape[axis]` replaced by `len`. `start + len` must not exceed `a->shape[axis]`; violation is a fatal error. Backward: accumulates `out->grad` into the corresponding slice of `a->grad` (the non-sliced region receives no gradient contribution from this op).
 - `TgSelfAttention`, `TgBlock`, `TgTransformer`, `TgGPT` architecture modules — these carry forward in function but require significant internal rewrites. The op migration is a prerequisite; no module can be migrated until all ops it depends on support N-D shapes. Key decisions recorded here:
 
