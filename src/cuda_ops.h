@@ -85,12 +85,6 @@ void cuda_softmax_rows_fwd(const float *a, float *out, int rows, int cols);
 void cuda_softmax_rows_bwd(const float *out_data, const float *g, float *da,
                            int rows, int cols);
 
-// inv_std: R-float device buffer (output of fwd, input of bwd)
-void cuda_layer_norm_rows_fwd(const float *a, float eps, float *out,
-                               float *inv_std, int rows, int cols);
-void cuda_layer_norm_rows_bwd(const float *y, const float *dy,
-                               const float *inv_std, float *dx,
-                               int rows, int cols);
 // cache layout: inv_std[rows], xhat[rows*cols]
 void cuda_layer_norm_rows_affine_fwd(const float *a, const float *gamma, const float *beta,
                                       float eps, float *out, float *cache,

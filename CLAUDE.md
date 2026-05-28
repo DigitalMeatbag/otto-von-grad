@@ -36,7 +36,7 @@ After code changes, build and run the test binary:
 
 ```powershell
 cmake --build --preset default
-.\build\otto_von_grad_tests.exe   # 48 tests; exits 0 on all-pass
+.\build\otto_von_grad_tests.exe   # 68 tests; exits 0 on all-pass
 ```
 
 `otto_von_grad.exe` is the GPT character-level demo (trains on `candide.txt`). It no longer runs tests at startup.

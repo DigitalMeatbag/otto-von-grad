@@ -3,6 +3,7 @@
 #include "tg_rng.h"
 #include "tg_train.h"
 #include "ovg_error.h"
+#include "tg_cuda.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -133,8 +134,18 @@ Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
     Tensor *A_raw = tg_attention_forward(&b->attn, LN_X);
     Tensor *A     = b->dropout > 0.0f ? tg_dropout(A_raw, b->dropout) : A_raw;
     if (tg_training && b->drop_path_rate > 0.0f) {
-        float u = tg_rng_uniform();
-        A = tg_scale(A, u < b->drop_path_rate ? 0.0f : 1.0f / (1.0f - b->drop_path_rate));
+        int mask_shape[3] = {B, 1, 1};
+        Tensor *dp_mask = tg_new(3, mask_shape);
+        float inv_keep = 1.0f / (1.0f - b->drop_path_rate);
+        float *md = TG_DATAF(dp_mask);
+        for (int i = 0; i < B; i++)
+            md[i] = (tg_rng_uniform() >= b->drop_path_rate) ? inv_keep : 0.0f;
+#ifdef OVG_CUDA_ENABLED
+        if (A->on_cuda) tg_to_cuda(dp_mask);
+#endif
+        Tensor *dp_1t  = tg_expand_dim(dp_mask, 1, T);   /* [B, T, 1] */
+        Tensor *dp_btc = tg_expand_dim(dp_1t,   2, C);   /* [B, T, C] */
+        A = tg_mul(A, dp_btc);
     }
     Tensor *Y1 = tg_add(X, A);
 
@@ -146,8 +157,18 @@ Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
     Tensor *F1W2  = tg_matmul(F1, b->W2);
     Tensor *F2    = tg_add(F1W2, B2);
     if (tg_training && b->drop_path_rate > 0.0f) {
-        float u = tg_rng_uniform();
-        F2 = tg_scale(F2, u < b->drop_path_rate ? 0.0f : 1.0f / (1.0f - b->drop_path_rate));
+        int mask_shape[3] = {B, 1, 1};
+        Tensor *dp_mask = tg_new(3, mask_shape);
+        float inv_keep = 1.0f / (1.0f - b->drop_path_rate);
+        float *md = TG_DATAF(dp_mask);
+        for (int i = 0; i < B; i++)
+            md[i] = (tg_rng_uniform() >= b->drop_path_rate) ? inv_keep : 0.0f;
+#ifdef OVG_CUDA_ENABLED
+        if (F2->on_cuda) tg_to_cuda(dp_mask);
+#endif
+        Tensor *dp_1t  = tg_expand_dim(dp_mask, 1, T);   /* [B, T, 1] */
+        Tensor *dp_btc = tg_expand_dim(dp_1t,   2, C);   /* [B, T, C] */
+        F2 = tg_mul(F2, dp_btc);
     }
     return tg_add(Y1, F2);
 }

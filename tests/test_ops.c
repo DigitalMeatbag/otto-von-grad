@@ -892,6 +892,280 @@ static void test_slice_oob(void) {
     OVG_CHECK(strstr(g_last_error, "invalid") != NULL);
 }
 
+/* ── T1: tg_tanh, tg_relu, tg_scale gradient tests ──────────────────────── */
+
+static void test_tanh_grad(void) {
+    Tensor *a = tg_new(2, (int[]){1, 3});
+    a->persistent = 1;
+    float *ad = TG_DATAF(a);
+    ad[0] = 0.5f; ad[1] = 0.0f; ad[2] = -1.0f;
+
+    Tensor *out = tg_tanh(a);
+    float *od = TG_DATAF(out);
+    OVG_CHECK_NEAR(od[0],  0.462117f, 1e-4f);
+    OVG_CHECK_NEAR(od[1],  0.0f,      1e-5f);
+    OVG_CHECK_NEAR(od[2], -0.761594f, 1e-4f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    float saved = ad[0];
+    float h = 1e-3f;
+    ad[0] = saved + h;
+    Tensor *p = tg_sum(tg_tanh(a));
+    float yp = TG_DATAF(p)[0]; tg_free_graph(p);
+    ad[0] = saved - h;
+    Tensor *m = tg_sum(tg_tanh(a));
+    float ym = TG_DATAF(m)[0]; tg_free_graph(m);
+    ad[0] = saved;
+    OVG_CHECK_NEAR(a->grad[0], (yp - ym) / (2.0f * h), 2e-3f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+static void test_relu_grad(void) {
+    Tensor *a = tg_new(2, (int[]){1, 4});
+    a->persistent = 1;
+    float *ad = TG_DATAF(a);
+    ad[0] = 2.0f; ad[1] = -1.0f; ad[2] = 0.0f; ad[3] = 0.5f;
+
+    Tensor *out = tg_relu(a);
+    float *od = TG_DATAF(out);
+    OVG_CHECK_NEAR(od[0], 2.0f, 1e-5f);
+    OVG_CHECK_NEAR(od[1], 0.0f, 1e-5f);
+    OVG_CHECK_NEAR(od[2], 0.0f, 1e-5f);
+    OVG_CHECK_NEAR(od[3], 0.5f, 1e-5f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    OVG_CHECK_NEAR(a->grad[0], 1.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[1], 0.0f, 1e-5f);
+    OVG_CHECK_NEAR(a->grad[3], 1.0f, 1e-5f);
+
+    float saved = ad[0];
+    float h = 1e-3f;
+    ad[0] = saved + h;
+    Tensor *p = tg_sum(tg_relu(a));
+    float yp = TG_DATAF(p)[0]; tg_free_graph(p);
+    ad[0] = saved - h;
+    Tensor *m = tg_sum(tg_relu(a));
+    float ym = TG_DATAF(m)[0]; tg_free_graph(m);
+    ad[0] = saved;
+    OVG_CHECK_NEAR(a->grad[0], (yp - ym) / (2.0f * h), 2e-3f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+static void test_scale_grad(void) {
+    Tensor *a = tg_new(2, (int[]){1, 3});
+    a->persistent = 1;
+    float *ad = TG_DATAF(a);
+    ad[0] = 1.0f; ad[1] = -2.0f; ad[2] = 3.0f;
+    float s = 2.5f;
+
+    Tensor *out = tg_scale(a, s);
+    float *od = TG_DATAF(out);
+    OVG_CHECK_NEAR(od[0],  2.5f, 1e-5f);
+    OVG_CHECK_NEAR(od[1], -5.0f, 1e-5f);
+    OVG_CHECK_NEAR(od[2],  7.5f, 1e-5f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    for (int i = 0; i < 3; i++)
+        OVG_CHECK_NEAR(a->grad[i], s, 1e-5f);
+
+    float saved = ad[1];
+    float h = 1e-3f;
+    ad[1] = saved + h;
+    Tensor *p = tg_sum(tg_scale(a, s));
+    float yp = TG_DATAF(p)[0]; tg_free_graph(p);
+    ad[1] = saved - h;
+    Tensor *m = tg_sum(tg_scale(a, s));
+    float ym = TG_DATAF(m)[0]; tg_free_graph(m);
+    ad[1] = saved;
+    OVG_CHECK_NEAR(a->grad[1], (yp - ym) / (2.0f * h), 2e-3f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+/* ── T2: tg_softmax on non-last axis ─────────────────────────────────────── */
+
+static void test_softmax_axis0(void) {
+    tg_seed(7);
+    Tensor *a = tg_new(2, (int[]){3, 4});
+    a->persistent = 1;
+    tg_fill_randn(a, 1.0f);
+
+    Tensor *out = tg_softmax(a, 0);
+    OVG_CHECK_SHAPE(out, 3, 4);
+
+    float *od = TG_DATAF(out);
+    for (int j = 0; j < 4; j++) {
+        float col_sum = 0.0f;
+        for (int i = 0; i < 3; i++) col_sum += od[i * 4 + j];
+        OVG_CHECK_NEAR(col_sum, 1.0f, 1e-5f);
+    }
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    float *ad = TG_DATAF(a);
+    float saved = ad[0];
+    float h = 1e-3f;
+    ad[0] = saved + h;
+    Tensor *p = tg_sum(tg_softmax(a, 0));
+    float yp = TG_DATAF(p)[0]; tg_free_graph(p);
+    ad[0] = saved - h;
+    Tensor *m = tg_sum(tg_softmax(a, 0));
+    float ym = TG_DATAF(m)[0]; tg_free_graph(m);
+    ad[0] = saved;
+    OVG_CHECK_NEAR(a->grad[0], (yp - ym) / (2.0f * h), 2e-3f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+/* ── T3: tg_dropout gradient in training mode ───────────────────────────── */
+
+static void test_dropout_grad(void) {
+    tg_training = 1;
+    tg_seed(42);
+
+    Tensor *a = tg_new(2, (int[]){1, 8});
+    a->persistent = 1;
+    float *ad = TG_DATAF(a);
+    for (int i = 0; i < 8; i++) ad[i] = (float)(i + 1);
+
+    Tensor *out = tg_dropout(a, 0.5f);
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    float inv_keep = 1.0f / 0.5f;
+    float *mask = (float *)out->cache;
+    for (int i = 0; i < 8; i++) {
+        if (mask[i] < 0.5f)
+            OVG_CHECK_NEAR(a->grad[i], 0.0f,     1e-5f);
+        else
+            OVG_CHECK_NEAR(a->grad[i], inv_keep, 1e-5f);
+    }
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+    tg_training = 0;
+}
+
+/* ── T4: LayerNorm backward finite-difference check ─────────────────────── */
+
+static void test_layer_norm_backward_finite_diff(void) {
+    Tensor *a     = tg_new(2, (int[]){2, 4});
+    Tensor *gamma = tg_new(2, (int[]){1, 4});
+    Tensor *beta  = tg_new(2, (int[]){1, 4});
+    a->persistent = gamma->persistent = beta->persistent = 1;
+
+    float av[] = {0.5f, -1.0f, 2.0f, -0.5f, 1.0f, 0.0f, -2.0f, 1.5f};
+    float gv[] = {1.5f, -0.5f, 2.0f, 0.8f};
+    float bv[] = {0.1f, -0.3f, 0.2f, 0.0f};
+    float *ad = TG_DATAF(a), *gd = TG_DATAF(gamma), *bd = TG_DATAF(beta);
+    for (int i = 0; i < 8; i++) ad[i] = av[i];
+    for (int i = 0; i < 4; i++) { gd[i] = gv[i]; bd[i] = bv[i]; }
+
+    Tensor *out = tg_layer_norm(a, gamma, beta, 1e-5f);
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    float h = 1e-3f;
+
+    /* dx[3] */
+    float saved = ad[3];
+    ad[3] = saved + h;
+    Tensor *p = tg_sum(tg_layer_norm(a, gamma, beta, 1e-5f));
+    float yp = TG_DATAF(p)[0]; tg_free_graph(p);
+    ad[3] = saved - h;
+    Tensor *m = tg_sum(tg_layer_norm(a, gamma, beta, 1e-5f));
+    float ym = TG_DATAF(m)[0]; tg_free_graph(m);
+    ad[3] = saved;
+    OVG_CHECK_NEAR(a->grad[3], (yp - ym) / (2.0f * h), 1e-3f);
+
+    /* dgamma[1] */
+    float gsaved = gd[1];
+    gd[1] = gsaved + h;
+    p = tg_sum(tg_layer_norm(a, gamma, beta, 1e-5f));
+    yp = TG_DATAF(p)[0]; tg_free_graph(p);
+    gd[1] = gsaved - h;
+    m = tg_sum(tg_layer_norm(a, gamma, beta, 1e-5f));
+    ym = TG_DATAF(m)[0]; tg_free_graph(m);
+    gd[1] = gsaved;
+    OVG_CHECK_NEAR(gamma->grad[1], (yp - ym) / (2.0f * h), 1e-3f);
+
+    /* dbeta[2] */
+    float bsaved = bd[2];
+    bd[2] = bsaved + h;
+    p = tg_sum(tg_layer_norm(a, gamma, beta, 1e-5f));
+    yp = TG_DATAF(p)[0]; tg_free_graph(p);
+    bd[2] = bsaved - h;
+    m = tg_sum(tg_layer_norm(a, gamma, beta, 1e-5f));
+    ym = TG_DATAF(m)[0]; tg_free_graph(m);
+    bd[2] = bsaved;
+    OVG_CHECK_NEAR(beta->grad[2], (yp - ym) / (2.0f * h), 1e-3f);
+
+    tg_free_graph(loss);
+    a->persistent = gamma->persistent = beta->persistent = 0;
+    tg_free(a); tg_free(gamma); tg_free(beta);
+}
+
+/* ── T5: tg_slice on 3D input ────────────────────────────────────────────── */
+
+static void test_slice_3d(void) {
+    /* [2x4x3] → slice axis=1, start=1, len=2 → [2x2x3] */
+    Tensor *a = tg_new(3, (int[]){2, 4, 3});
+    a->persistent = 1;
+    float *ad = TG_DATAF(a);
+    for (int i = 0; i < 24; i++) ad[i] = (float)(i + 1);
+
+    Tensor *out = tg_slice(a, 1, 1, 2);
+    OVG_CHECK_SHAPE_ND(out, 3, 2, 2, 3);
+
+    float *od = TG_DATAF(out);
+    /* out[0][0][:] = a[0][1][:] = 4,5,6 */
+    OVG_CHECK_NEAR(od[0], 4.0f,  1e-5f);
+    OVG_CHECK_NEAR(od[1], 5.0f,  1e-5f);
+    OVG_CHECK_NEAR(od[2], 6.0f,  1e-5f);
+    /* out[0][1][:] = a[0][2][:] = 7,8,9 */
+    OVG_CHECK_NEAR(od[3], 7.0f,  1e-5f);
+    /* out[1][0][:] = a[1][1][:] = 16,17,18 */
+    OVG_CHECK_NEAR(od[6], 16.0f, 1e-5f);
+    OVG_CHECK_NEAR(od[7], 17.0f, 1e-5f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+
+    /* axis-1 index 0 and 3: grad=0; indices 1 and 2: grad=1 */
+    for (int b = 0; b < 2; b++) {
+        for (int c = 0; c < 3; c++)
+            OVG_CHECK_NEAR(a->grad[b*12 + 0*3 + c], 0.0f, 1e-5f);
+        for (int c = 0; c < 3; c++)
+            OVG_CHECK_NEAR(a->grad[b*12 + 1*3 + c], 1.0f, 1e-5f);
+        for (int c = 0; c < 3; c++)
+            OVG_CHECK_NEAR(a->grad[b*12 + 2*3 + c], 1.0f, 1e-5f);
+        for (int c = 0; c < 3; c++)
+            OVG_CHECK_NEAR(a->grad[b*12 + 3*3 + c], 0.0f, 1e-5f);
+    }
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
 /* ── Suite entry point ───────────────────────────────────────────────────── */
 
 void run_ops_tests(int *passed, int *failed) {
@@ -927,6 +1201,13 @@ void run_ops_tests(int *passed, int *failed) {
     RUN_TEST(test_slice_axis0,                    passed, failed);
     RUN_TEST(test_slice_axis1,                    passed, failed);
     RUN_TEST(test_slice_oob,                      passed, failed);
+    RUN_TEST(test_tanh_grad,                      passed, failed);
+    RUN_TEST(test_relu_grad,                      passed, failed);
+    RUN_TEST(test_scale_grad,                     passed, failed);
+    RUN_TEST(test_softmax_axis0,                  passed, failed);
+    RUN_TEST(test_dropout_grad,                   passed, failed);
+    RUN_TEST(test_layer_norm_backward_finite_diff, passed, failed);
+    RUN_TEST(test_slice_3d,                       passed, failed);
 #ifdef OVG_CUDA_ENABLED
     RUN_TEST(test_cuda_cast_bf16_roundtrip, passed, failed);
     RUN_TEST(test_cuda_bf16_matmul,         passed, failed);

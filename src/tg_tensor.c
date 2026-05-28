@@ -18,6 +18,12 @@ Tensor *tg_new(int ndim, const int shape[]) {
             ovg_fatal("tg_new: shape[%d]=%d must be positive", i, shape[i]);
         nel *= shape[i];
     }
+    /* NOTE: nel computed as int. Promoting tg_numel to long would be strictly
+       correct but the refactor is wide; >2.1B elements is unreachable on 12 GB
+       VRAM in practice. This guard catches overflow before allocation. */
+    if (nel <= 0)
+        ovg_fatal("tg_new: shape product overflows int (%d dims, first dim %d)",
+                  ndim, shape[0]);
     Tensor *t = calloc(1, sizeof(Tensor));
     if (!t) ovg_fatal("tg_new: out of memory");
     t->ndim  = ndim;

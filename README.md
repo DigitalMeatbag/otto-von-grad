@@ -324,7 +324,7 @@ CMake produces three targets:
 
 ```powershell
 cmake --build --preset default
-.\build\otto_von_grad_tests.exe   # 59 tests; exits 0 on all-pass
+.\build\otto_von_grad_tests.exe   # 68 tests; exits 0 on all-pass
 
 # Or via CTest
 ctest -C Release --test-dir build
