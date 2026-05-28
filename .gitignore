@@ -1,6 +1,7 @@
 build/
 .claude/
 data/checkpoints/
+data/import/raw/
 *.o
 *.a
 *.so

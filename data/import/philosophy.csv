@@ -1,0 +1,57 @@
+year,author,title,uri
+-475,Confucius,The Analects,https://www.gutenberg.org/cache/epub/3330/pg3330.txt
+-400,Laozi,Tao Te Ching,https://www.gutenberg.org/cache/epub/216/pg216.txt
+-380,Plato,The Republic,https://www.gutenberg.org/cache/epub/55201/pg55201.txt
+-399,Plato,Apology,https://www.gutenberg.org/cache/epub/1656/pg1656.txt
+-385,Plato,Phaedo,https://www.gutenberg.org/cache/epub/1658/pg1658.txt
+-385,Plato,Symposium,https://www.gutenberg.org/cache/epub/1600/pg1600.txt
+-380,Plato,Meno,https://www.gutenberg.org/cache/epub/1643/pg1643.txt
+-340,Aristotle,Nicomachean Ethics,https://www.gutenberg.org/cache/epub/8438/pg8438.txt
+-350,Aristotle,Politics,https://www.gutenberg.org/cache/epub/6762/pg6762.txt
+-335,Aristotle,Poetics,https://www.gutenberg.org/cache/epub/1974/pg1974.txt
+-350,Aristotle,Categories,https://www.gutenberg.org/cache/epub/2412/pg2412.txt
+-300,Zhuangzi,Chuang Tzu,https://www.gutenberg.org/cache/epub/59709/pg59709.txt
+-300,Buddhist Tradition,Dhammapada,https://www.gutenberg.org/cache/epub/2017/pg2017.txt
+108,Epictetus,Enchiridion,https://www.gutenberg.org/cache/epub/45109/pg45109.txt
+108,Epictetus,Discourses,https://www.gutenberg.org/cache/epub/10661/pg10661.txt
+175,Marcus Aurelius,Meditations,https://www.gutenberg.org/cache/epub/2680/pg2680.txt
+524,Boethius,The Consolation of Philosophy,https://www.gutenberg.org/cache/epub/14328/pg14328.txt
+397,Augustine,Confessions,https://www.gutenberg.org/cache/epub/3296/pg3296.txt
+426,Augustine,City of God - Volume I,https://www.gutenberg.org/cache/epub/45304/pg45304.txt
+426,Augustine,City of God - Volume II,https://www.gutenberg.org/cache/epub/45305/pg45305.txt
+1274,Thomas Aquinas,Summa Theologica - Part I,https://www.gutenberg.org/cache/epub/17611/pg17611.txt
+1274,Thomas Aquinas,Summa Theologica - Part I-II,https://www.gutenberg.org/cache/epub/17897/pg17897.txt
+1274,Thomas Aquinas,Summa Theologica - Part II-II,https://www.gutenberg.org/cache/epub/18755/pg18755.txt
+1274,Thomas Aquinas,Summa Theologica - Part III,https://www.gutenberg.org/cache/epub/19950/pg19950.txt
+1637,René Descartes,Discourse on Method,https://www.gutenberg.org/cache/epub/59/pg59.txt
+1641,René Descartes,Meditations on First Philosophy,https://www.gutenberg.org/cache/epub/70091/pg70091.txt
+1644,René Descartes,Principles of Philosophy,https://www.gutenberg.org/cache/epub/4391/pg4391.txt
+1651,Thomas Hobbes,Leviathan,https://www.gutenberg.org/cache/epub/3207/pg3207.txt
+1689,John Locke,An Essay Concerning Human Understanding - Volume 1,https://www.gutenberg.org/cache/epub/10615/pg10615.txt
+1689,John Locke,An Essay Concerning Human Understanding - Volume 2,https://www.gutenberg.org/cache/epub/10616/pg10616.txt
+1689,John Locke,Second Treatise of Government,https://www.gutenberg.org/cache/epub/7370/pg7370.txt
+1677,Baruch Spinoza,Ethics,https://www.gutenberg.org/cache/epub/3800/pg3800.txt
+1739,David Hume,A Treatise of Human Nature,https://www.gutenberg.org/cache/epub/4705/pg4705.txt
+1748,David Hume,An Enquiry Concerning Human Understanding,https://www.gutenberg.org/cache/epub/9662/pg9662.txt
+1755,Jean-Jacques Rousseau,Discourse on Inequality,https://www.gutenberg.org/cache/epub/11136/pg11136.txt
+1762,Jean-Jacques Rousseau,The Social Contract,https://www.gutenberg.org/cache/epub/46333/pg46333.txt
+1781,Immanuel Kant,Critique of Pure Reason,https://www.gutenberg.org/cache/epub/4280/pg4280.txt
+1785,Immanuel Kant,Groundwork of the Metaphysic of Morals,https://www.gutenberg.org/cache/epub/5682/pg5682.txt
+1783,Immanuel Kant,Prolegomena to Any Future Metaphysics,https://www.gutenberg.org/cache/epub/52821/pg52821.txt
+1795,Immanuel Kant,Perpetual Peace,https://www.gutenberg.org/cache/epub/50922/pg50922.txt
+1818,Arthur Schopenhauer,The World as Will and Representation - Volume 1,https://www.gutenberg.org/cache/epub/38427/pg38427.txt
+1818,Arthur Schopenhauer,The World as Will and Representation - Volume 2,https://www.gutenberg.org/cache/epub/40097/pg40097.txt
+1818,Arthur Schopenhauer,The World as Will and Representation - Volume 3,https://www.gutenberg.org/cache/epub/40868/pg40868.txt
+1883,Friedrich Nietzsche,Thus Spake Zarathustra,https://www.gutenberg.org/cache/epub/1998/pg1998.txt
+1886,Friedrich Nietzsche,Beyond Good and Evil,https://www.gutenberg.org/cache/epub/4363/pg4363.txt
+1887,Friedrich Nietzsche,On the Genealogy of Morals,https://www.gutenberg.org/cache/epub/52319/pg52319.txt
+1895,Friedrich Nietzsche,The Antichrist,https://www.gutenberg.org/cache/epub/19322/pg19322.txt
+1532,Niccolò Machiavelli,The Prince,https://www.gutenberg.org/cache/epub/1232/pg1232.txt
+1859,John Stuart Mill,On Liberty,https://www.gutenberg.org/cache/epub/34901/pg34901.txt
+1863,John Stuart Mill,Utilitarianism,https://www.gutenberg.org/cache/epub/11224/pg11224.txt
+1843,John Stuart Mill,A System of Logic,https://www.gutenberg.org/cache/epub/27942/pg27942.txt
+1848,Karl Marx and Friedrich Engels,The Communist Manifesto,https://www.gutenberg.org/cache/epub/61/pg61.txt
+1849,Henry David Thoreau,Civil Disobedience,https://www.gutenberg.org/cache/epub/71/pg71.txt
+1912,Bertrand Russell,The Problems of Philosophy,https://www.gutenberg.org/cache/epub/5827/pg5827.txt
+1918,Bertrand Russell,Mysticism and Logic,https://www.gutenberg.org/cache/epub/25447/pg25447.txt
+1914,Bertrand Russell,Our Knowledge of the External World,https://www.gutenberg.org/cache/epub/37090/pg37090.txt
