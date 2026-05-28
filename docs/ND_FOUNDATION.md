@@ -1,6 +1,6 @@
 # otto-von-grad v2 — Foundation Document
 
-> **Status:** Complete — all decisions resolved. Spec derivation order is fixed by the dependency chain: `tg_reshape` → N-D op migration (including `tg_expand_dim`, `tg_cast`) → architecture module migration (`TgSelfAttention` is the gate for the rest). FP16 ships in the same pass, not deferred.
+> **Status:** Complete — all decisions resolved. Spec derivation order is fixed by the dependency chain: `tg_reshape` → N-D op migration (including `tg_expand_dim`, `tg_cast`) → architecture module migration (`TgSelfAttention` is the gate for the rest). BF16 ships in the same pass, not deferred.
 
 ---
 
@@ -88,7 +88,7 @@ This keeps ownership and shape flow visible in the graph, which is essential for
 
 ### 4.3 — CUDA Support Stays Optional **[RESOLVED]**
 
-`OVG_CUDA=ON` / `OVG_CUDA=OFF` via CMake remains the mechanism. The CPU path must stay correct and symmetric. No CUDA-only op implementations — every op's forward and backward must have a working CPU path. Exception: `TG_DTYPE_F16` is a CUDA-only opt-in dtype; the `dtype` field and `tg_cast` op exist on both paths, but tensors with `dtype == TG_DTYPE_F16` assert on CPU. See §5.2.
+`OVG_CUDA=ON` / `OVG_CUDA=OFF` via CMake remains the mechanism. The CPU path must stay correct and symmetric. No CUDA-only op implementations — every op's forward and backward must have a working CPU path. Exception: `TG_DTYPE_BF16` is a CUDA-only opt-in dtype; the `dtype` field and `tg_cast` op exist on both paths, but tensors with `dtype == TG_DTYPE_BF16` assert on CPU. See §5.2.
 
 ### 4.4 — C11, No ML Framework Dependencies **[RESOLVED]**
 
@@ -110,25 +110,26 @@ The "no external libraries" constraint is reframed to match its actual intent: *
 
 This also updates the constraint stated in §4.4: the rule is now "no ML framework dependencies," not "no external libraries."
 
-`tg_matmul` dispatches to the appropriate cuBLAS routine based on input ndim: `cublasSgemm` for 2D×2D FP32, `cublasSgemmStridedBatched` for N-D FP32 inputs (e.g., 3D×2D weight projections, 4D×4D attention scores). When inputs are FP16, the appropriate variants are `cublasHgemm` / `cublasGemmEx` (with FP32 accumulation — cuBLAS handles the precision boundary). The cuBLAS permission covers all of these variants — they are all matmul. Architecture modules always call `tg_matmul`; they do not reach cuBLAS directly.
+`tg_matmul` dispatches to the appropriate cuBLAS routine based on input ndim: `cublasSgemm` for 2D×2D FP32, `cublasSgemmStridedBatched` for N-D FP32 inputs (e.g., 3D×2D weight projections, 4D×4D attention scores). When inputs are BF16, the appropriate variant is `cublasGemmEx` with `CUDA_R_16BF` data type and `CUBLAS_COMPUTE_32F` accumulation — there is no `cublasHgemm` equivalent for BF16; `cublasGemmEx` is always used. cuBLAS handles the precision boundary automatically. The cuBLAS permission covers all of these variants — they are all matmul. Architecture modules always call `tg_matmul`; they do not reach cuBLAS directly.
 
-### 5.2 — Mixed Precision (FP16 / BF16) **[RESOLVED]**
+### 5.2 — Mixed Precision (BF16) **[RESOLVED]**
 
-**Decision: mixed precision as an opt-in CUDA-only path (Option B). FP32 remains the default.**
+**Decision: mixed precision as an opt-in CUDA-only path (BF16). FP32 remains the default.**
 
-The FP16 path is in scope for v2 and ships alongside the N-D migration — it is not deferred. The `Tensor` struct gains a `dtype` field as part of the N-D struct redesign; stubbing it in now avoids a second struct migration.
+The BF16 path is in scope for v2 and ships alongside the N-D migration — it is not deferred. The `Tensor` struct gains a `dtype` field as part of the N-D struct redesign; stubbing it in now avoids a second struct migration.
 
-The field type is `TgDtype`, an enum with two values: `TG_DTYPE_F32` (default) and `TG_DTYPE_F16`. The `DTYPE_` segment is required — C enum members are global-scope and `TG_F32` is a collision risk. The CPU path only ever holds `TG_DTYPE_F32`; `TG_DTYPE_F16` is only valid on CUDA tensors and will assert otherwise.
+The field type is `TgDtype`, an enum with two values: `TG_DTYPE_F32` (default) and `TG_DTYPE_BF16`. The `DTYPE_` segment is required — C enum members are global-scope and `TG_F32` is a collision risk. The CPU path only ever holds `TG_DTYPE_F32`; `TG_DTYPE_BF16` is only valid on CUDA tensors (Ampere / sm_80 or newer) and will assert otherwise. By 2026, Ampere is the de facto baseline for consumer ML hardware; the RTX 4070 Super (sm_89, Ada Lovelace) fully supports it.
 
 **Dtype conversion:** precision changes are explicit graph nodes via `tg_cast(Tensor *a, TgDtype dtype)`. There is no dtype-at-construction argument to `tg_new` — all tensors are allocated as `TG_DTYPE_F32` and cast explicitly when needed. This keeps dtype changes visible in the computation graph. Returns a new tensor with its own allocation. The backward pass through `tg_cast` converts the incoming gradient to the input tensor's dtype.
 
-Breakdown of what runs at which precision:
-- **Activations and weights:** FP16 on the CUDA path, via explicit `tg_cast` after allocation
-- **Optimizer state (Adam m/v buffers):** FP32 — FP16 lacks the range for accumulated moments
-- **Loss scaling:** required — FP16 gradients can underflow during the backward pass itself, so scaling must happen before gradients propagate, not after. All loss ops (`tg_cross_entropy`, `tg_cross_entropy_sparse`) return a `[1, 1]` scalar tensor; they reduce via **mean** over all B×T token positions internally. Loss scaling is applied by seeding the backward pass with the scale factor: `tg_backward_scaled(Tensor *root, float scale)` seeds `root->grad[0] = scale` instead of 1.0f, so every gradient in the graph is amplified by `scale` before any FP16 arithmetic occurs. The existing `tg_backward` (seed = 1.0f) is unchanged. Before the optimizer step, the caller descales all parameter gradients by dividing by `scale`. The scale factor is a plain `float` held by the caller — not a tensor, not a graph node.
-- **Matmul accumulation:** FP32 internally even on Tensor Cores — cuBLAS handles this boundary automatically
+BF16 has the same exponent range as FP32 — gradients do not underflow in the backward pass. Loss scaling is not required. `tg_backward` (seed = 1.0f) is used unchanged for both FP32 and BF16 paths.
 
-The CPU path stays FP32-only. No FP16 benefit exists there (Tensor Cores are GPU hardware).
+Breakdown of what runs at which precision:
+- **Activations and weights:** BF16 on the CUDA path, via explicit `tg_cast` after allocation
+- **Optimizer state (Adam m/v buffers):** FP32 — BF16 has only 7 mantissa bits; small gradient accumulations quantize to zero at BF16 precision, corrupting the moment estimates
+- **Matmul accumulation:** FP32 internally even on Tensor Cores — cuBLAS handles this boundary automatically via `CUBLAS_COMPUTE_32F`
+
+The CPU path stays FP32-only. No BF16 benefit exists there (Tensor Cores are GPU hardware).
 
 ### 5.3 — Memory Strategy Under Batching **[RESOLVED]**
 
@@ -168,7 +169,7 @@ These govern tradeoff decisions throughout v2.
 
 **5. No ML framework dependencies.** Vendor math libraries (cuBLAS) are permitted — see §4.4 and §5.1. ML frameworks (PyTorch, ONNX, etc.) are off the table.
 
-**6. The CPU path stays correct.** CUDA is optional. The CPU fallback must pass all tests and produce correct results. No op implementation is CUDA-only. Exception: `TG_DTYPE_F16` tensors are invalid on CPU and assert — FP16 is a CUDA-only dtype, not a CUDA-only op.
+**6. The CPU path stays correct.** CUDA is optional. The CPU fallback must pass all tests and produce correct results. No op implementation is CUDA-only. Exception: `TG_DTYPE_BF16` tensors are invalid on CPU and assert — BF16 is a CUDA-only dtype, not a CUDA-only op.
 
 **7. Ownership is obvious.** `persistent = 1` marks parameters. `tg_free_graph` handles intermediates. This ownership model carries forward; batching must not require callers to track additional allocations.
 
@@ -184,11 +185,11 @@ Everything in the current v1 API carries forward unless explicitly displaced by 
   - **New:** `tg_reshape(Tensor *a, int ndim, const int shape[])` (see §4.1). `tg_expand_dim(Tensor *a, int axis, int n)` (see §4.2). `tg_cast(Tensor *a, TgDtype dtype)` (see §5.2).
 - `TgSelfAttention`, `TgBlock`, `TgTransformer`, `TgGPT` architecture modules — these carry forward in function but require significant internal rewrites. The op migration is a prerequisite; no module can be migrated until all ops it depends on support N-D shapes. Key decisions recorded here:
 
-  **`TgSelfAttention` is the epicenter.** The current per-head loop (`tg_slice_cols` → `tg_transpose` → `tg_matmul` → `tg_causal_mask` → `tg_softmax_rows` → `tg_matmul`, × n_heads, then `tg_concat_cols`) is replaced by a reshape+strided approach. The full forward sequence: reshape `Q/K/V` from `[B, T, C]` to `[B, H, T, D]`; compute `Q @ K^T` via `tg_matmul` → `[B, H, T, T]`; scale by `1/√D`; apply `tg_causal_mask` on `[B, H, T, T]` (GPT only, skip for ViT); apply `tg_softmax(axis=3)`; compute `Attn @ V` via a second `tg_matmul` → `[B, H, T, D]`; reshape back to `[B, T, C]`. This eliminates the `n_heads > TG_MAX_PARENTS` ceiling and is the correct path for Tensor Core utilization on the 4070 Super. It requires `tg_reshape` to land before `tg_attention_forward` can be migrated.
+  **`TgSelfAttention` is the epicenter.** The current per-head loop (`tg_slice_cols` → `tg_transpose` → `tg_matmul` → `tg_causal_mask` → `tg_softmax_rows` → `tg_matmul`, × n_heads, then `tg_concat_cols`) is replaced by a reshape+strided approach. The full forward sequence: reshape `Q/K/V` from `[B, T, C]` to `[B, H, T, D]`; compute `Q @ K^T` via `tg_matmul` → `[B, H, T, T]`; scale by `1/√D` via elementwise multiply with a persistent `[1, 1, 1, 1]` scalar tensor containing `1/√D` (allocated once per attention layer, not rebuilt each forward pass); apply `tg_causal_mask` on `[B, H, T, T]` (GPT only, skip for ViT); apply `tg_softmax(axis=3)`; compute `Attn @ V` via a second `tg_matmul` → `[B, H, T, D]`; reshape back to `[B, T, C]`. This eliminates the `n_heads > TG_MAX_PARENTS` ceiling and is the correct path for Tensor Core utilization on the 4070 Super. It requires `tg_reshape` to land before `tg_attention_forward` can be migrated.
 
-  **Weight broadcast pattern.** All projection weights (`Wq`, `Wk`, `Wv`, `Wo`, FFN `W1`/`W2`) remain 2D (`[C, C]` or `[C, H]`). Batched matmul against a 3D input (`[B, T, C] @ [C, C]`) is the dominant pattern throughout and must be supported by `tg_matmul` and the cuBLAS path.
+  **Weight broadcast pattern.** All attention projection weights (`Wq`, `Wk`, `Wv`, `Wo`) remain 2D (`[C, C]`). FFN weights are `W1: [C, ffn_dim]` and `W2: [ffn_dim, C]`, where `ffn_dim` is typically `4×C`. (`ffn_dim` is used here to avoid collision with `H`, which denotes head count throughout this document.) Batched matmul against a 3D input (`[B, T, C] @ [C, C]`) is the dominant pattern throughout and must be supported by `tg_matmul` and the cuBLAS path.
 
-  **`TgBlock` LayerNorm parameters** (`gamma`, `beta`) are `[1, C]` and must broadcast over `[B, T, C]` inputs. This crosses an ndim boundary: use `tg_reshape` to lift to `[1, 1, C]`, then `tg_expand_dim` twice (axis 0 → B, axis 1 → T). See §4.2 for the full sequence. No implicit broadcasting.
+  **`TgBlock` LayerNorm parameters** (`gamma`, `beta`) are `[1, C]` and must broadcast over `[B, T, C]` inputs. `tg_layer_norm` normalizes over the last axis (axis `ndim-1`, i.e., the `C` dimension) for any N-D input. This crosses an ndim boundary: use `tg_reshape` to lift to `[1, 1, C]`, then `tg_expand_dim` twice (axis 0 → B, axis 1 → T). See §4.2 for the full sequence. No implicit broadcasting.
 
   **`tg_gpt_forward` input interface changes.** The current `tg_gpt_forward(TgGPT *g, const int *token_ids)` takes a flat array of length `seq_len`. The batched signature is `tg_gpt_forward(TgGPT *g, const int *token_ids, int batch_size)` where `token_ids` is a flat `[B × T]` row-major int array. This is consistent with tensor data layout and GPU transfer requirements — pointer-of-pointers is not used.
 
@@ -211,7 +212,7 @@ These are explicitly out of scope for v2 unless a future decision reopens them:
 - Model parallelism
 - Gradient checkpointing
 - Dynamic computation graphs (v2 is still static-graph-per-step)
-- Automatic mixed precision — FP16 support (§5.2) is explicit and opt-in, not automatic
+- Automatic mixed precision — BF16 support (§5.2) is explicit and opt-in, not automatic
 - A Python binding
 - ONNX export
 - Any external ML framework dependency
