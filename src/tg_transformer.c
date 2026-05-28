@@ -59,9 +59,9 @@ Tensor *tg_transformer_forward(TgTransformer *t, Tensor *X) {
     if (!t || !X)
         ovg_fatal("tg_transformer_forward: NULL argument");
 
-    if (X->cols != t->embed_dim)
-        ovg_fatal("tg_transformer_forward: X has shape [%dx%d], expected cols=%d",
-                  X->rows, X->cols, t->embed_dim);
+    if (X->ndim < 2 || X->shape[X->ndim - 1] != t->embed_dim)
+        ovg_fatal("tg_transformer_forward: last dim of X (%d) != embed_dim (%d)",
+                  X->shape[X->ndim - 1], t->embed_dim);
 
     Tensor *Y = X;
     for (int i = 0; i < t->n_blocks; i++)

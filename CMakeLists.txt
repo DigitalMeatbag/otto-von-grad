@@ -47,7 +47,7 @@ target_include_directories(ottovongrad PUBLIC src/)
 
 if(OVG_CUDA)
     target_compile_definitions(ottovongrad PUBLIC OVG_CUDA_ENABLED)
-    target_link_libraries(ottovongrad PUBLIC CUDA::cudart)
+    target_link_libraries(ottovongrad PUBLIC CUDA::cudart CUDA::cublas)
 endif()
 
 if(NOT MSVC)

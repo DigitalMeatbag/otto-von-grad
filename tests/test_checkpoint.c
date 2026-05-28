@@ -12,17 +12,19 @@ static void test_checkpoint_roundtrip(void) {
     Tensor *params[16];
     int n = tg_gpt_collect_params(&gpt, params, 16);
 
-    int nel   = params[0]->rows * params[0]->cols;
+    int nel = tg_numel(params[0]);
     float *orig = malloc((size_t)nel * sizeof(float));
     OVG_CHECK(orig != NULL);
-    for (int i = 0; i < nel; i++) orig[i] = params[0]->data[i];
+    float *pd = TG_DATAF(params[0]);
+    for (int i = 0; i < nel; i++) orig[i] = pd[i];
 
     OVG_CHECK_EQ(tg_checkpoint_save(CKPT_TMP, params, n), 0);
 
-    for (int i = 0; i < nel; i++) params[0]->data[i] = 0.0f;
+    for (int i = 0; i < nel; i++) pd[i] = 0.0f;
 
     OVG_CHECK_EQ(tg_checkpoint_load(CKPT_TMP, params, n), 0);
-    for (int i = 0; i < nel; i++) OVG_CHECK_NEAR(params[0]->data[i], orig[i], 1e-6f);
+    pd = TG_DATAF(params[0]);
+    for (int i = 0; i < nel; i++) OVG_CHECK_NEAR(pd[i], orig[i], 1e-6f);
 
     free(orig);
     tg_gpt_free(&gpt);

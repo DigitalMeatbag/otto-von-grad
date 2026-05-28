@@ -7,8 +7,10 @@ TgLinear tg_linear_create(int n_in, int n_out, int batch, float w_scale) {
     l.n_in  = n_in;
     l.n_out = n_out;
     l.batch = batch;
-    l.W = tg_new(n_in,  n_out);  tg_fill_randn(l.W, w_scale);  l.W->persistent = 1;
-    l.B = tg_new(batch, n_out);  tg_fill(l.B, 0.0f);           l.B->persistent = 1;
+    int wshape[2] = {n_in,  n_out};
+    int bshape[2] = {batch, n_out};
+    l.W = tg_new(2, wshape);  tg_fill_randn(l.W, w_scale);  l.W->persistent = 1;
+    l.B = tg_new(2, bshape);  tg_fill(l.B, 0.0f);           l.B->persistent = 1;
     return l;
 }
 

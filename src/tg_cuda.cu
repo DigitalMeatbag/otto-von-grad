@@ -17,7 +17,7 @@
 } while(0)
 
 void tg_to_cuda(Tensor *t) {
-    size_t bytes = (size_t)t->rows * t->cols * sizeof(float);
+    size_t bytes = (size_t)tg_numel(t) * sizeof(float);
     if (!t->cuda_data) {
         CUDA_CHECK(cudaMalloc(&t->cuda_data, bytes));
     }
@@ -31,21 +31,23 @@ void tg_to_cuda(Tensor *t) {
 
 void tg_from_cuda(Tensor *t) {
     if (!t->on_cuda) return;
-    size_t bytes = (size_t)t->rows * t->cols * sizeof(float);
+    size_t bytes = (size_t)tg_numel(t) * sizeof(float);
     CUDA_CHECK(cudaMemcpy(t->data, t->cuda_data, bytes, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(t->grad, t->cuda_grad, bytes, cudaMemcpyDeviceToHost));
 }
 
 void tg_cuda_alloc(Tensor *t) {
-    size_t bytes = (size_t)t->rows * t->cols * sizeof(float);
+    size_t delem = (t->dtype == TG_DTYPE_BF16) ? 2 : 4;  /* data element bytes */
+    size_t dbytes = (size_t)tg_numel(t) * delem;
+    size_t gbytes = (size_t)tg_numel(t) * sizeof(float);  /* grad always F32 */
     if (!t->cuda_data) {
-        CUDA_CHECK(cudaMallocAsync(&t->cuda_data, bytes, 0));
+        CUDA_CHECK(cudaMallocAsync(&t->cuda_data, dbytes, 0));
     }
     if (!t->cuda_grad) {
-        CUDA_CHECK(cudaMallocAsync(&t->cuda_grad, bytes, 0));
+        CUDA_CHECK(cudaMallocAsync(&t->cuda_grad, gbytes, 0));
     }
-    CUDA_CHECK(cudaMemsetAsync(t->cuda_data, 0, bytes, 0));
-    CUDA_CHECK(cudaMemsetAsync(t->cuda_grad, 0, bytes, 0));
+    CUDA_CHECK(cudaMemsetAsync(t->cuda_data, 0, dbytes, 0));
+    CUDA_CHECK(cudaMemsetAsync(t->cuda_grad, 0, gbytes, 0));
     t->on_cuda = 1;
 }
 
@@ -62,7 +64,7 @@ void tg_cuda_upload_cache(Tensor *t, const float *host_src, int n) {
 
 void tg_cuda_zero_grad(Tensor *t) {
     if (!t->on_cuda || !t->cuda_grad) return;
-    size_t bytes = (size_t)t->rows * t->cols * sizeof(float);
+    size_t bytes = (size_t)tg_numel(t) * sizeof(float);
     CUDA_CHECK(cudaMemsetAsync(t->cuda_grad, 0, bytes, 0));
 }
 

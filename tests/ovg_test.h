@@ -7,11 +7,6 @@
 /* Defined in test_main.c; each test function reads/writes this. */
 extern int ovg_test_failed;
 
-/*
- * On failure: print file:line diagnostic, mark the current test failed,
- * and return from the calling (void) test function.  Subsequent checks in
- * the same test are skipped, preventing NULL-dereference cascades.
- */
 #define OVG_CHECK(cond) do { \
     if (!(cond)) { \
         fprintf(stderr, "  %s:%d: FAIL — %s\n", __FILE__, __LINE__, #cond); \
@@ -39,16 +34,35 @@ extern int ovg_test_failed;
     } \
 } while (0)
 
+/* N-D shape check: verifies ndim and each shape dimension */
+#define OVG_CHECK_SHAPE_ND(t, nd, ...) do { \
+    int _expected[] = {__VA_ARGS__}; \
+    if ((t)->ndim != (nd)) { \
+        fprintf(stderr, "  %s:%d: FAIL — ndim %d != %d\n", \
+                __FILE__, __LINE__, (t)->ndim, (nd)); \
+        ovg_test_failed = 1; \
+        return; \
+    } \
+    for (int _i = 0; _i < (nd); _i++) { \
+        if ((t)->shape[_i] != _expected[_i]) { \
+            fprintf(stderr, "  %s:%d: FAIL — shape[%d] %d != %d\n", \
+                    __FILE__, __LINE__, _i, (t)->shape[_i], _expected[_i]); \
+            ovg_test_failed = 1; \
+            return; \
+        } \
+    } \
+} while (0)
+
+/* Backward-compatible 2D shape check */
 #define OVG_CHECK_SHAPE(t, r, c) do { \
-    if ((t)->rows != (r) || (t)->cols != (c)) { \
-        fprintf(stderr, "  %s:%d: FAIL — shape [%dx%d] != [%dx%d]\n", \
-                __FILE__, __LINE__, (t)->rows, (t)->cols, (r), (c)); \
+    if ((t)->ndim != 2 || (t)->shape[0] != (r) || (t)->shape[1] != (c)) { \
+        fprintf(stderr, "  %s:%d: FAIL — shape [%dx%d ndim=%d] != [%dx%d]\n", \
+                __FILE__, __LINE__, (t)->shape[0], (t)->shape[1], (t)->ndim, (r), (c)); \
         ovg_test_failed = 1; \
         return; \
     } \
 } while (0)
 
-/* Runs a void test function, resets ovg_test_failed before each call. */
 #define RUN_TEST(fn, passed, failed) do { \
     ovg_test_failed = 0; \
     fn(); \

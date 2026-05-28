@@ -156,6 +156,48 @@ void cuda_embed_bwd(const float *g, const float *ids, float *dw, int T, int C);
 void cuda_dropout_fwd(const float *a, const float *mask, float *out, int n);
 void cuda_dropout_bwd(const float *mask, const float *g, float *da, int n);
 
+// ── BF16 conversion ──────────────────────────────────────────────────────────
+// void* pointers carry __nv_bfloat16 data (2 bytes/element).
+
+void cuda_cast_f32_to_bf16(const float *in, void *out_bf16, int n);
+void cuda_cast_bf16_to_f32(const void *in_bf16, float *out, int n);
+
+// BF16 batched GEMM: A, B are BF16 (void*), C is F32.
+// Same op_A/op_B convention as cuda_batched_sgemm.
+void cuda_batched_sgemm_bf16(char op_A, char op_B,
+                              const void *A, const void *B, float *C,
+                              int batch, int M, int K, int N,
+                              long strideA, long strideB, long strideC,
+                              float alpha, float beta);
+
+// ── Batched matmul (same-ndim path, cuBLAS SgemmStridedBatched) ──────────────
+// C[b] = alpha * op(A[b]) @ op(B[b]) + beta * C[b]
+// op_A/op_B: 'N' = no-transpose, 'T' = transpose
+// Strides are in float elements, not bytes.
+
+void cuda_batched_sgemm(char op_A, char op_B,
+                        const float *A, const float *B, float *C,
+                        int batch, int M, int K, int N,
+                        long strideA, long strideB, long strideC,
+                        float alpha, float beta);
+
+// ── expand_dim: tile a[..., 1, ...] n times along axis → out[..., n, ...]
+// Backward: sum output grad over axis into input grad.
+
+void cuda_expand_dim_fwd(const float *a, float *out,
+                         int outer, int inner, int n);
+void cuda_expand_dim_bwd(const float *g, float *da,
+                         int outer, int inner, int n);
+
+// ── slice: extract contiguous slice of len elements at start along axis.
+// outer = product of dims before axis, inner = product of dims after axis.
+// Backward: scatter g back into da at the same offset.
+
+void cuda_slice_fwd(const float *a, float *out,
+                    int outer, int a_axis, int inner, int start, int len);
+void cuda_slice_bwd(const float *g, float *da,
+                    int outer, int a_axis, int inner, int start, int len);
+
 // ── Adam optimizer step ───────────────────────────────────────────────────────
 // Updates param in-place using m, v moment buffers (all on device).
 

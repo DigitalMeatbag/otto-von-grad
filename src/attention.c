@@ -8,9 +8,6 @@ TgSelfAttention tg_attention_create(int embed_dim, int n_heads) {
     if (n_heads <= 0 || embed_dim % n_heads != 0)
         ovg_fatal("tg_attention_create: embed_dim %d not divisible by n_heads %d",
                   embed_dim, n_heads);
-    if (n_heads > TG_MAX_PARENTS)
-        ovg_fatal("tg_attention_create: n_heads %d exceeds TG_MAX_PARENTS=%d",
-                  n_heads, TG_MAX_PARENTS);
 
     TgSelfAttention a;
     a.embed_dim = embed_dim;
@@ -18,10 +15,11 @@ TgSelfAttention tg_attention_create(int embed_dim, int n_heads) {
     a.head_dim  = embed_dim / n_heads;
     a.causal    = 1;
 
-    a.Wq = tg_new(embed_dim, embed_dim);
-    a.Wk = tg_new(embed_dim, embed_dim);
-    a.Wv = tg_new(embed_dim, embed_dim);
-    a.Wo = tg_new(embed_dim, embed_dim);
+    int wshape[2] = {embed_dim, embed_dim};
+    a.Wq = tg_new(2, wshape);
+    a.Wk = tg_new(2, wshape);
+    a.Wv = tg_new(2, wshape);
+    a.Wo = tg_new(2, wshape);
 
     float scale = 0.1f;
     tg_fill_randn(a.Wq, scale);
@@ -39,12 +37,10 @@ TgSelfAttention tg_attention_create(int embed_dim, int n_heads) {
 
 void tg_attention_free(TgSelfAttention *a) {
     if (!a) return;
-
     tg_free(a->Wq);
     tg_free(a->Wk);
     tg_free(a->Wv);
     tg_free(a->Wo);
-
     a->Wq = NULL;
     a->Wk = NULL;
     a->Wv = NULL;
@@ -64,58 +60,55 @@ TgSelfAttention tg_attention_create_encoder(int embed_dim, int n_heads) {
 TgAttentionForward tg_attention_forward_full(TgSelfAttention *a, Tensor *X) {
     if (!a || !X)
         ovg_fatal("tg_attention_forward_full: NULL argument");
-    if (X->cols != a->embed_dim)
-        ovg_fatal("tg_attention_forward_full: X has shape [%dx%d], expected cols=%d",
-                  X->rows, X->cols, a->embed_dim);
+    if (X->ndim < 2 || X->shape[X->ndim - 1] != a->embed_dim)
+        ovg_fatal("tg_attention_forward_full: last dim of X (%d) != embed_dim (%d)",
+                  X->shape[X->ndim - 1], a->embed_dim);
 
-    /*
-        Full Q/K/V projections:
+    int B = (X->ndim == 3) ? X->shape[0] : 1;
+    int T = X->shape[X->ndim - 2];
+    int C = a->embed_dim;
+    int H = a->n_heads;
+    int D = a->head_dim;  /* C = H * D */
 
-        X:         [T x C]
-        Wq/Wk/Wv:  [C x C]
-        Q/K/V:     [T x C]
-    */
     TgAttentionForward f;
+
+    /*  Q/K/V = X @ Wq/Wk/Wv: [B,T,C] @ [C,C] → [B,T,C] */
     f.Q = tg_matmul(X, a->Wq);
     f.K = tg_matmul(X, a->Wk);
     f.V = tg_matmul(X, a->Wv);
 
-    /*
-        Per-head attention:
+    /* Reshape [B,T,C] → [B,T,H,D] then transpose(1,2) → [B,H,T,D]
+       Direct reshape to [B,H,T,D] would scramble head/token ordering. */
+    int q_4d_shape[4] = {B, T, H, D};
+    Tensor *Q_bthd = tg_reshape(f.Q, 4, q_4d_shape);
+    Tensor *K_bthd = tg_reshape(f.K, 4, q_4d_shape);
+    Tensor *V_bthd = tg_reshape(f.V, 4, q_4d_shape);
 
-        For each head h:
-          Qh = Q[:, h*D : (h+1)*D]   [T x D]
-          Kh = K[:, h*D : (h+1)*D]   [T x D]
-          Vh = V[:, h*D : (h+1)*D]   [T x D]
+    Tensor *Q_4d = tg_transpose(Q_bthd, 1, 2);  /* [B,H,T,D] */
+    Tensor *K_4d = tg_transpose(K_bthd, 1, 2);  /* [B,H,T,D] */
+    Tensor *V_4d = tg_transpose(V_bthd, 1, 2);  /* [B,H,T,D] */
 
-          Kht    = Kh^T               [D x T]
-          scores = Qh @ Kht           [T x T]
-          scaled = scores * (1/sqrt D)[T x T]
-          masked = causal_mask(scaled)[T x T]
-          wts    = softmax_rows(masked)[T x T]
-          Oh     = wts @ Vh           [T x D]
+    /* K^T: [B,H,T,D] → [B,H,D,T] */
+    Tensor *K_t = tg_transpose(K_4d, 2, 3);
 
-        O = concat_cols(Oh...)        [T x C]
-    */
-    int D = a->head_dim;
-    int n = a->n_heads;
-    Tensor *head_out[TG_MAX_PARENTS];
-    float scale = 1.0f / sqrtf((float)D);
+    /* Attention scores: [B,H,T,D] @ [B,H,D,T] → [B,H,T,T] */
+    Tensor *scores = tg_matmul(Q_4d, K_t);
+    Tensor *scaled = tg_scale(scores, 1.0f / sqrtf((float)D));
 
-    for (int h = 0; h < n; h++) {
-        Tensor *Qh  = tg_slice_cols(f.Q, h * D, (h + 1) * D);
-        Tensor *Kh  = tg_slice_cols(f.K, h * D, (h + 1) * D);
-        Tensor *Vh  = tg_slice_cols(f.V, h * D, (h + 1) * D);
+    /* Optional causal mask, then softmax over last axis */
+    Tensor *weights = a->causal
+        ? tg_softmax(tg_causal_mask(scaled), 3)
+        : tg_softmax(scaled, 3);
 
-        Tensor *Kht     = tg_transpose(Kh);
-        Tensor *scores  = tg_matmul(Qh, Kht);
-        Tensor *scaled  = tg_scale(scores, scale);
-        Tensor *weights = a->causal ? tg_softmax_rows(tg_causal_mask(scaled))
-                                    : tg_softmax_rows(scaled);
-        head_out[h]     = tg_matmul(weights, Vh);
-    }
+    /* Context: [B,H,T,T] @ [B,H,T,D] → [B,H,T,D] */
+    Tensor *context_4d = tg_matmul(weights, V_4d);
 
-    f.O    = tg_concat_cols(head_out, n);
+    /* Transpose back [B,H,T,D] → [B,T,H,D] then reshape → [B,T,C] */
+    Tensor *context_bthd = tg_transpose(context_4d, 1, 2);
+    int ctx_shape[3] = {B, T, C};
+    f.O = tg_reshape(context_bthd, 3, ctx_shape);
+
+    /* Output projection: [B,T,C] @ [C,C] → [B,T,C] */
     f.proj = tg_matmul(f.O, a->Wo);
 
     return f;
@@ -123,11 +116,8 @@ TgAttentionForward tg_attention_forward_full(TgSelfAttention *a, Tensor *X) {
 
 void tg_attention_forward_free(TgAttentionForward *f) {
     if (!f) return;
-    tg_free(f->proj);
-    tg_free(f->O);
-    tg_free(f->V);
-    tg_free(f->K);
-    tg_free(f->Q);
+    /* Graph nodes are freed by tg_free_graph(f->proj).
+       Just null the pointers so callers don't double-free. */
     f->proj = f->O = f->V = f->K = f->Q = NULL;
 }
 

@@ -10,9 +10,13 @@ TgGPT tg_gpt_create(int vocab_size, int embed_dim, int hidden_dim, int seq_len, 
     g.embed_dim  = embed_dim;
     g.seq_len    = seq_len;
 
-    g.TokEmb = tg_new(vocab_size, embed_dim);
-    g.PosEmb = tg_new(seq_len,    embed_dim);
-    g.Wout   = tg_new(embed_dim,  vocab_size);
+    int te_shape[2] = {vocab_size, embed_dim};
+    int pe_shape[2] = {seq_len,    embed_dim};
+    int wo_shape[2] = {embed_dim,  vocab_size};
+
+    g.TokEmb = tg_new(2, te_shape);
+    g.PosEmb = tg_new(2, pe_shape);
+    g.Wout   = tg_new(2, wo_shape);
     tg_fill_randn(g.TokEmb, 0.1f);
     tg_fill_randn(g.PosEmb, 0.1f);
     tg_fill_randn(g.Wout,   0.1f);
@@ -36,23 +40,31 @@ void tg_gpt_free(TgGPT *g) {
     g->Wout   = NULL;
 }
 
-Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids) {
+Tensor *tg_gpt_forward(TgGPT *g, const int *token_ids, int batch_size) {
     if (!g || !token_ids)
         ovg_fatal("tg_gpt_forward: NULL argument");
+    if (batch_size < 1)
+        ovg_fatal("tg_gpt_forward: batch_size must be >= 1, got %d", batch_size);
 
-    /*
-        token_ids:  [seq_len]  (integer token indices)
-        TokEmb:     [V x C]
-        Xtok:       [T x C]   (gathered rows of TokEmb)
+    int B = batch_size, T = g->seq_len, C = g->embed_dim, V = g->vocab_size;
 
-        X = Xtok + PosEmb  [T x C]
-        Y = transformer(X) [T x C]
-        logits = Y @ Wout  [T x V]
-    */
-    Tensor *Xtok   = tg_embed(g->TokEmb, token_ids, g->seq_len);
-    Tensor *X      = tg_add(Xtok, g->PosEmb);
-    Tensor *Y      = tg_transformer_forward(&g->transformer, X);
-    return tg_matmul(Y, g->Wout);
+    /*  Embed: flat [B*T] token ids → [B*T, C] then reshape to [B, T, C] */
+    Tensor *Xtok_flat = tg_embed(g->TokEmb, token_ids, B * T);
+    int btc[3] = {B, T, C};
+    Tensor *Xtok = tg_reshape(Xtok_flat, 3, btc);
+
+    /* PosEmb is [T, C]; expand to [B, T, C] */
+    int pos3[3] = {1, T, C};
+    Tensor *PosEmb_3d = tg_reshape(g->PosEmb, 3, pos3);
+    Tensor *PosEmb_B  = tg_expand_dim(PosEmb_3d, 0, B);  /* [B, T, C] */
+
+    Tensor *X = tg_add(Xtok, PosEmb_B);          /* [B, T, C] */
+    Tensor *Y = tg_transformer_forward(&g->transformer, X);  /* [B, T, C] */
+
+    /* Logits: [B, T, C] @ [C, V] → [B, T, V]; reshape to [B*T, V] for CE */
+    Tensor *logits_3d = tg_matmul(Y, g->Wout);   /* [B, T, V] */
+    int logits2d[2] = {B * T, V};
+    return tg_reshape(logits_3d, 2, logits2d);    /* [B*T, V] */
 }
 
 TgGPT tg_gpt_create_from_config(const TgGPTConfig *cfg) {
@@ -61,7 +73,7 @@ TgGPT tg_gpt_create_from_config(const TgGPTConfig *cfg) {
 }
 
 int tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params) {
-    int needed = 3 + g->transformer.n_blocks * 12;  /* 12 = gamma1+beta1+Wq+Wk+Wv+Wo + gamma2+beta2+W1+B1+W2+B2 */
+    int needed = 3 + g->transformer.n_blocks * 12;
     if (needed > max_params)
         ovg_fatal("tg_gpt_collect_params: need %d slots, capacity %d", needed, max_params);
     int n = 0;
