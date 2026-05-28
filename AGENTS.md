@@ -126,7 +126,7 @@ All ops in `tg_ops.c / tg_ops.h`. Every op has a paired `_backward` function —
 
 * `tg_causal_mask(scores)` — masks future positions across all leading dims; last two dims must be equal (square)
 * `tg_softmax(a, axis)` — softmax along specified axis; CUDA dispatch for 2D last-axis, CPU general
-* `tg_layer_norm(a, gamma, beta, eps)` — normalizes over `ndim-1` (feature axis); `gamma`/`beta` last dim must match `a`'s last dim; callers pre-expand parameters via `tg_reshape + tg_expand_dim`
+* `tg_layer_norm(a, gamma, beta, eps)` — normalizes over `ndim-1` (feature axis); `gamma`/`beta` must be `[1, C]` (exactly C elements); pass them directly without pre-expansion
 
 ### Regularization
 
@@ -212,7 +212,7 @@ void     tg_block_free(TgBlock *b);
 Tensor  *tg_block_forward(TgBlock *b, Tensor *X);
 ```
 
-`seq_len` is accepted for API compatibility but no longer affects parameter shapes. `gamma`/`beta` and bias tensors are expanded to `[B, T, C]` at runtime via `tg_reshape + tg_expand_dim` — no static pre-tiling.
+`seq_len` is accepted for API compatibility but no longer affects parameter shapes. `gamma`/`beta` are passed as `[1, C]` directly to `tg_layer_norm`. Bias tensors (`B1`, `B2`) are expanded to `[B, T, C/H]` at runtime via `tg_reshape + tg_expand_dim` for use with `tg_add` — no static pre-tiling.
 
 ---
 

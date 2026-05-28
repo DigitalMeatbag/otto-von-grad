@@ -423,6 +423,75 @@ void cuda_transpose_bwd(const float *g, float *da, int out_rows, int out_cols) {
     transpose_bwd_k<<<grd,blk>>>(g, da, out_rows, out_cols);
 }
 
+// ── General N-D transpose (any ndim ≤ 4, any two axes) ───────────────────────
+// Forward: iterate over input elements; map in_idx → out_idx via axis swap.
+// Backward: iterate over output-grad elements; map out_idx → in_idx via axis swap
+//           and atomicAdd into da.
+// Unused shape slots (ndim < 4) are passed as 1 (never divide by them).
+
+__global__ void transpose_nd_fwd_k(const float *a, float *out,
+                                    int ndim,
+                                    int s0, int s1, int s2, int s3,
+                                    int dim0, int dim1, int n) {
+    int in_idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (in_idx >= n) return;
+
+    int ishape[4] = {s0, s1, s2, s3};
+    int oshape[4] = {s0, s1, s2, s3};
+    { int t = oshape[dim0]; oshape[dim0] = oshape[dim1]; oshape[dim1] = t; }
+
+    /* Decode in_idx → multi-index using input shape */
+    int mi[4], rem = in_idx;
+    for (int d = ndim - 1; d >= 0; d--) { mi[d] = rem % ishape[d]; rem /= ishape[d]; }
+
+    /* Swap axes dim0/dim1 to get output multi-index */
+    { int t = mi[dim0]; mi[dim0] = mi[dim1]; mi[dim1] = t; }
+
+    /* Encode output flat index using output shape */
+    int out_idx = 0, stride = 1;
+    for (int d = ndim - 1; d >= 0; d--) { out_idx += mi[d] * stride; stride *= oshape[d]; }
+
+    out[out_idx] = a[in_idx];
+}
+
+__global__ void transpose_nd_bwd_k(const float *g, float *da,
+                                    int ndim,
+                                    int s0, int s1, int s2, int s3,
+                                    int dim0, int dim1, int n) {
+    /* g  is indexed by self->shape  (transposed shape)
+       da is indexed by a->shape     (original shape = self->shape with dim0/dim1 swapped) */
+    int self_idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (self_idx >= n) return;
+
+    int sshape[4] = {s0, s1, s2, s3};  /* self (output of transpose) */
+    int ashape[4] = {s0, s1, s2, s3};
+    { int t = ashape[dim0]; ashape[dim0] = ashape[dim1]; ashape[dim1] = t; }
+
+    /* Decode self_idx → multi-index using self->shape */
+    int mi[4], rem = self_idx;
+    for (int d = ndim - 1; d >= 0; d--) { mi[d] = rem % sshape[d]; rem /= sshape[d]; }
+
+    /* Swap axes to get a's multi-index */
+    { int t = mi[dim0]; mi[dim0] = mi[dim1]; mi[dim1] = t; }
+
+    /* Encode a's flat index */
+    int a_idx = 0, stride = 1;
+    for (int d = ndim - 1; d >= 0; d--) { a_idx += mi[d] * stride; stride *= ashape[d]; }
+
+    atomicAdd(&da[a_idx], g[self_idx]);
+}
+
+void cuda_transpose_nd_fwd(const float *a, float *out,
+                            int ndim, int s0, int s1, int s2, int s3,
+                            int dim0, int dim1, int n) {
+    transpose_nd_fwd_k<<<blocks(n), BLOCK>>>(a, out, ndim, s0, s1, s2, s3, dim0, dim1, n);
+}
+void cuda_transpose_nd_bwd(const float *g, float *da,
+                            int ndim, int s0, int s1, int s2, int s3,
+                            int dim0, int dim1, int n) {
+    transpose_nd_bwd_k<<<blocks(n), BLOCK>>>(g, da, ndim, s0, s1, s2, s3, dim0, dim1, n);
+}
+
 // ── Reductions ────────────────────────────────────────────────────────────────
 
 __global__ void sum_fwd_k(const float *a, float *out, int n) {

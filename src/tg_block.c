@@ -79,8 +79,9 @@ void tg_block_free(TgBlock *b) {
     b->hidden_dim = 0;
 }
 
-/* Expand a [1, C] parameter to [B, T, C] for use with tg_layer_norm or tg_add.
-   [1, C] → reshape [1, 1, C] → expand_dim(0, B) → [B, 1, C] → expand_dim(1, T) → [B, T, C] */
+/* Expand a [1, C] parameter to [B, T, C] for use with tg_add (FFN biases).
+   [1, C] → reshape [1, 1, C] → expand_dim(0, B) → [B, 1, C] → expand_dim(1, T) → [B, T, C]
+   Note: tg_layer_norm does NOT require expansion; pass [1, C] directly. */
 static Tensor *expand_param_btc(Tensor *param, int B, int T) {
     int C = param->shape[1];
     int s3[3] = {1, 1, C};
@@ -106,13 +107,7 @@ Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
     int C = b->embed_dim;
     int H = b->hidden_dim;
 
-    /* Expand [1, C] affine params to [B, T, C] for layer norm */
-    Tensor *g1 = expand_param_btc(b->gamma1, B, T);
-    Tensor *b1_ln = expand_param_btc(b->beta1,  B, T);
-    Tensor *g2 = expand_param_btc(b->gamma2, B, T);
-    Tensor *b2_ln = expand_param_btc(b->beta2,  B, T);
-
-    /* Expand [1, H] and [1, C] FFN biases to [B, T, H/C] */
+    /* Expand [1, C] / [1, H] FFN biases to [B, T, C/H] for use with tg_add */
     int s3h[3] = {1, 1, H};
     int s3c[3] = {1, 1, C};
     Tensor *B1_3 = tg_reshape(b->B1, 3, s3h);
@@ -125,16 +120,16 @@ Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
     /*
         Pre-norm transformer block:
 
-        LN_X  = layer_norm(X,  g1, b1_ln)     [B, T, C]
-        A     = attention(LN_X)                [B, T, C]
+        LN_X  = layer_norm(X,  gamma1, beta1)   [B, T, C]
+        A     = attention(LN_X)                  [B, T, C]
         Y1    = X + A
 
-        LN_Y1 = layer_norm(Y1, g2, b2_ln)
-        F1    = tanh(LN_Y1 @ W1 + B1)         [B, T, H]
-        F2    = F1 @ W2 + B2                   [B, T, C]
+        LN_Y1 = layer_norm(Y1, gamma2, beta2)
+        F1    = tanh(LN_Y1 @ W1 + B1)           [B, T, H]
+        F2    = F1 @ W2 + B2                     [B, T, C]
         Y2    = Y1 + F2
     */
-    Tensor *LN_X  = tg_layer_norm(X, g1, b1_ln, 1.0e-5f);
+    Tensor *LN_X  = tg_layer_norm(X, b->gamma1, b->beta1, 1.0e-5f);
     Tensor *A_raw = tg_attention_forward(&b->attn, LN_X);
     Tensor *A     = b->dropout > 0.0f ? tg_dropout(A_raw, b->dropout) : A_raw;
     if (tg_training && b->drop_path_rate > 0.0f) {
@@ -143,7 +138,7 @@ Tensor *tg_block_forward(TgBlock *b, Tensor *X) {
     }
     Tensor *Y1 = tg_add(X, A);
 
-    Tensor *LN_Y1 = tg_layer_norm(Y1, g2, b2_ln, 1.0e-5f);
+    Tensor *LN_Y1 = tg_layer_norm(Y1, b->gamma2, b->beta2, 1.0e-5f);
     Tensor *Y1W1  = tg_matmul(LN_Y1, b->W1);
     Tensor *F1pre = tg_add(Y1W1, B1);
     Tensor *F1act = tg_tanh(F1pre);

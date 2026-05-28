@@ -17,6 +17,9 @@
 } while(0)
 
 void tg_to_cuda(Tensor *t) {
+    if (t->dtype == TG_DTYPE_BF16)
+        ovg_fatal("tg_to_cuda: BF16 tensors are device-only; "
+                  "use tg_cast to create BF16 on device, never sync from host");
     size_t bytes = (size_t)tg_numel(t) * sizeof(float);
     if (!t->cuda_data) {
         CUDA_CHECK(cudaMalloc(&t->cuda_data, bytes));
@@ -31,6 +34,9 @@ void tg_to_cuda(Tensor *t) {
 
 void tg_from_cuda(Tensor *t) {
     if (!t->on_cuda) return;
+    if (t->dtype == TG_DTYPE_BF16)
+        ovg_fatal("tg_from_cuda: BF16 tensors are device-only; "
+                  "cast to F32 with tg_cast before syncing to host");
     size_t bytes = (size_t)tg_numel(t) * sizeof(float);
     CUDA_CHECK(cudaMemcpy(t->data, t->cuda_data, bytes, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(t->grad, t->cuda_grad, bytes, cudaMemcpyDeviceToHost));
