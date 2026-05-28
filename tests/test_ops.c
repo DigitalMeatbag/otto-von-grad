@@ -472,6 +472,51 @@ static void test_layer_norm_affine_shape_mismatch(void) {
     OVG_CHECK(strstr(g_last_error, "last dim") != NULL);
 }
 
+static void test_layer_norm_3d_input(void) {
+    /* [B,T,C] input with [1,C] gamma/beta — must succeed */
+    Tensor *a     = tg_new(3, (int[]){2, 3, 4});
+    Tensor *gamma = tg_new(2, (int[]){1, 4});
+    Tensor *beta  = tg_new(2, (int[]){1, 4});
+    tg_fill(gamma, 1.0f);
+    tg_fill(beta,  0.0f);
+    float *ad = TG_DATAF(a);
+    for (int i = 0; i < 24; i++) ad[i] = (float)(i + 1);
+
+    Tensor *out = tg_layer_norm(a, gamma, beta, 1e-5f);
+    OVG_CHECK_SHAPE_ND(out, 3, 2, 3, 4);
+
+    /* each group of 4 elements normalizes to mean~0, var~1 */
+    float *od = TG_DATAF(out);
+    float sum = 0.0f;
+    for (int j = 0; j < 4; j++) sum += od[j];
+    OVG_CHECK_NEAR(sum, 0.0f, 1e-4f);
+
+    tg_free(out);
+    tg_free(a);
+    tg_free(gamma);
+    tg_free(beta);
+}
+
+static void test_layer_norm_rejects_expanded_params(void) {
+    /* [B,T,C] gamma/beta has last dim == C but numel > C — must fatal */
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *a     = tg_new(3, (int[]){2, 3, 4});
+        Tensor *gamma = tg_new(3, (int[]){2, 3, 4}); /* numel=24 != C=4 */
+        Tensor *beta  = tg_new(2, (int[]){1, 4});
+        tg_layer_norm(a, gamma, beta, 1e-5f);
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "exactly") != NULL);
+}
+
 /* ── tg_rng_uniform ──────────────────────────────────────────────────────── */
 
 static void test_rng_uniform(void) {
@@ -868,7 +913,9 @@ void run_ops_tests(int *passed, int *failed) {
     RUN_TEST(test_matmul_shape_mismatch, passed, failed);
     RUN_TEST(test_embed_oob,           passed, failed);
     RUN_TEST(test_sparse_ce_oob,       passed, failed);
-    RUN_TEST(test_layer_norm_affine_shape_mismatch, passed, failed);
+    RUN_TEST(test_layer_norm_affine_shape_mismatch,    passed, failed);
+    RUN_TEST(test_layer_norm_3d_input,                 passed, failed);
+    RUN_TEST(test_layer_norm_rejects_expanded_params,  passed, failed);
     RUN_TEST(test_rng_uniform,               passed, failed);
     RUN_TEST(test_drop_path_rate_schedule,       passed, failed);
     RUN_TEST(test_drop_path_inference_noop,      passed, failed);
