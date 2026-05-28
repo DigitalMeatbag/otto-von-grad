@@ -280,8 +280,12 @@ static void backward_transpose(Tensor *self) {
     int dim1 = (int)self->cache[1];
 
 #ifdef OVG_CUDA_ENABLED
-    if (self->on_cuda && self->ndim == 2 && dim0 == 0 && dim1 == 1) {
-        cuda_transpose_bwd(self->cuda_grad, a->cuda_grad, self->shape[0], self->shape[1]);
+    if (self->on_cuda) {
+        cuda_transpose_nd_bwd(self->cuda_grad, a->cuda_grad,
+                              self->ndim,
+                              self->shape[0], self->shape[1],
+                              self->shape[2], self->shape[3],
+                              dim0, dim1, tg_numel(self));
         return;
     }
 #endif
@@ -304,7 +308,14 @@ static void backward_causal_mask(Tensor *self) {
     Tensor *scores = self->parents[0];
     int seq_len = self->shape[self->ndim - 1];
 #ifdef OVG_CUDA_ENABLED
-    if (self->on_cuda) { cuda_causal_mask_bwd(self->cuda_grad, scores->cuda_grad, seq_len); return; }
+    if (self->on_cuda) {
+        int slices = tg_numel(self) / (seq_len * seq_len);
+        for (int k = 0; k < slices; k++)
+            cuda_causal_mask_bwd(self->cuda_grad    + (size_t)k * seq_len * seq_len,
+                                 scores->cuda_grad  + (size_t)k * seq_len * seq_len,
+                                 seq_len);
+        return;
+    }
 #endif
     int n = tg_numel(self);
     for (int k = 0; k < n; k += seq_len * seq_len) {
@@ -371,10 +382,14 @@ static void backward_softmax(Tensor *self) {
     for (int i = axis + 1; i < ndim; i++) inner *= self->shape[i];
 
 #ifdef OVG_CUDA_ENABLED
-    if (self->on_cuda && ndim == 2 && axis == 1) {
-        cuda_softmax_rows_bwd(self->cuda_data, self->cuda_grad, a->cuda_grad,
-                              outer, axis_sz);
-        return;
+    if (self->on_cuda) {
+        if (inner == 1) {
+            cuda_softmax_rows_bwd(self->cuda_data, self->cuda_grad, a->cuda_grad,
+                                  outer, axis_sz);
+            return;
+        }
+        ovg_fatal("backward_softmax: CUDA path requires inner==1 (axis must be last dim); "
+                  "got ndim=%d axis=%d inner=%d", ndim, axis, inner);
     }
 #endif
     float *sd = TG_DATAF(self);
@@ -713,8 +728,12 @@ Tensor *tg_transpose(Tensor *a, int dim0, int dim1) {
     out->cache[1] = (float)dim1;
 
 #ifdef OVG_CUDA_ENABLED
-    if (out->on_cuda && a->ndim == 2 && dim0 == 0 && dim1 == 1) {
-        cuda_transpose_fwd(a->cuda_data, out->cuda_data, a->shape[0], a->shape[1]);
+    if (out->on_cuda) {
+        cuda_transpose_nd_fwd(a->cuda_data, out->cuda_data,
+                              a->ndim,
+                              a->shape[0], a->shape[1],
+                              a->shape[2], a->shape[3],
+                              dim0, dim1, tg_numel(a));
         return out;
     }
 #endif
@@ -744,11 +763,12 @@ Tensor *tg_causal_mask(Tensor *scores) {
     Tensor *out = make_op(ndim, scores->shape, scores, NULL, backward_causal_mask);
 #ifdef OVG_CUDA_ENABLED
     if (out->on_cuda) {
-        /* CUDA kernel handles 2D [T×T]; for N-D call it per-slice */
-        if (ndim == 2) {
-            cuda_causal_mask_fwd(scores->cuda_data, out->cuda_data, seq_len);
-            return out;
-        }
+        int slices = tg_numel(scores) / (seq_len * seq_len);
+        for (int k = 0; k < slices; k++)
+            cuda_causal_mask_fwd(scores->cuda_data + (size_t)k * seq_len * seq_len,
+                                 out->cuda_data    + (size_t)k * seq_len * seq_len,
+                                 seq_len);
+        return out;
     }
 #endif
     int n = tg_numel(scores);
@@ -769,6 +789,10 @@ Tensor *tg_layer_norm(Tensor *a, Tensor *gamma, Tensor *beta, float eps) {
     if (gamma->shape[gamma->ndim - 1] != C || beta->shape[beta->ndim - 1] != C)
         ovg_fatal("tg_layer_norm: gamma/beta last dim must equal a->shape[ndim-1]=%d (got %d and %d)",
                   C, gamma->shape[gamma->ndim-1], beta->shape[beta->ndim-1]);
+    if (tg_numel(gamma) != C || tg_numel(beta) != C)
+        ovg_fatal("tg_layer_norm: gamma/beta must have exactly %d elements "
+                  "(last dim only; pass [1,C] tensors, not pre-expanded [B,T,C])",
+                  C);
 #ifdef OVG_CUDA_ENABLED
     if (a->on_cuda != gamma->on_cuda || a->on_cuda != beta->on_cuda)
         ovg_fatal("tg_layer_norm: mixed CUDA/CPU parents");
@@ -830,9 +854,13 @@ Tensor *tg_softmax(Tensor *a, int axis) {
     for (int i = axis + 1; i < a->ndim; i++) inner *= a->shape[i];
 
 #ifdef OVG_CUDA_ENABLED
-    if (out->on_cuda && a->ndim == 2 && axis == 1) {
-        cuda_softmax_rows_fwd(a->cuda_data, out->cuda_data, outer, axis_sz);
-        return out;
+    if (out->on_cuda) {
+        if (inner == 1) {
+            cuda_softmax_rows_fwd(a->cuda_data, out->cuda_data, outer, axis_sz);
+            return out;
+        }
+        ovg_fatal("tg_softmax: CUDA path requires inner==1 (axis must be last dim); "
+                  "got ndim=%d axis=%d inner=%d", a->ndim, axis, inner);
     }
 #endif
     float *ad = TG_DATAF(a), *od = TG_DATAF(out);

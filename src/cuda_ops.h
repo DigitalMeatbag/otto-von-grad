@@ -55,6 +55,18 @@ void cuda_transpose_fwd(const float *a, float *out, int rows, int cols);
 // da += transpose(g); accumulates into da (does not overwrite)
 void cuda_transpose_bwd(const float *g, float *da, int out_rows, int out_cols);
 
+// General N-D transpose: swap axes dim0/dim1 for any ndim ≤ 4.
+// s0..s3 are the shape of the SOURCE tensor (a for fwd, self for bwd);
+// unused slots (ndim < 4) should be passed as 1.
+// fwd: out[transposed] = a[original]
+// bwd: da[original] += g[transposed]   (accumulates)
+void cuda_transpose_nd_fwd(const float *a, float *out,
+                            int ndim, int s0, int s1, int s2, int s3,
+                            int dim0, int dim1, int n);
+void cuda_transpose_nd_bwd(const float *g, float *da,
+                            int ndim, int s0, int s1, int s2, int s3,
+                            int dim0, int dim1, int n);
+
 // ── Reductions ────────────────────────────────────────────────────────────────
 // out must be zero-initialised before cuda_sum_fwd (use tg_cuda_alloc).
 
