@@ -19,7 +19,11 @@ loss -= tgt[j] * (row[j] - log_sum_exp);
 ```
 For near-zero softmax probabilities the `+1e-7` floor caps the log and produces a materially different loss value than the CPU path. Gradients are unaffected (the backward uses cached probs via `(prob - target)/rows` in both paths), but loss telemetry diverges between CPU and GPU runs for identical inputs.
 
-**Fix:** Save `log_sum_exp = logf(sum) + mx` into a shared-memory slot before normalizing the probabilities. Replace the thread-0 loop body with `loss -= row_tgt[j] * (row_in[j] - log_sum_exp)`. This also unlocks Step L1 (parallel loss reduction) since `log_sum_exp` is then available to all threads.
+**Fix (dense kernel only — `cross_entropy_fwd_k`):** After `sum = smem[0]`, all threads already hold `sum` and `mx` as register values. Compute `float log_sum_exp = logf(sum) + mx;` in registers immediately at that point, before the probability-normalization loop — no smem slot needed. Replace the thread-0 serial loss loop with `loss -= row_tgt[j] * (row_in[j] - log_sum_exp)`.
+
+The sparse kernel (`cross_entropy_sparse_fwd_k`) already computes `log_sum_exp` in registers (line 1073) and already uses the correct formula (line 1081) — H1 does not apply there.
+
+This fix also unlocks Step L1 for the dense kernel, since `log_sum_exp` is then in all threads' registers.
 
 ---
 
@@ -82,16 +86,24 @@ if (batch <= 0)
 **Fix:** Replace the two `tg_scale` stochastic-depth blocks with per-sample masking. Build a `[B, 1, 1]` tensor from B independent Bernoulli draws, expand it to `[B, T, C]` via two `tg_expand_dim` calls, then multiply with `tg_mul`. This keeps the mask in the autograd graph so gradients flow correctly through kept positions and zero through dropped ones.
 
 ```c
-// Replaces: A = tg_scale(A, u < rate ? 0.0f : inv_keep)
-int mask_shape[3] = {B, 1, 1};
-Tensor *dp_mask = tg_new(3, mask_shape);
-float inv_keep = 1.0f / (1.0f - b->drop_path_rate);
-float *md = TG_DATAF(dp_mask);
-for (int i = 0; i < B; i++)
-    md[i] = (tg_rng_uniform() >= b->drop_path_rate) ? inv_keep : 0.0f;
-Tensor *dp_1t = tg_expand_dim(dp_mask, 1, T);   /* [B, T, 1] */
-Tensor *dp_btc = tg_expand_dim(dp_1t, 2, C);    /* [B, T, C] */
-A = tg_mul(A, dp_btc);
+// Replaces the full body of:
+//   if (tg_training && b->drop_path_rate > 0.0f) {
+//       float u = tg_rng_uniform();
+//       A = tg_scale(A, u < b->drop_path_rate ? 0.0f : 1.0f / (1.0f - b->drop_path_rate));
+//   }
+// with:
+if (tg_training && b->drop_path_rate > 0.0f) {
+    int B = A->shape[0], T = A->shape[1], C = A->shape[2];
+    int mask_shape[3] = {B, 1, 1};
+    Tensor *dp_mask = tg_new(3, mask_shape);
+    float inv_keep = 1.0f / (1.0f - b->drop_path_rate);
+    float *md = TG_DATAF(dp_mask);
+    for (int i = 0; i < B; i++)
+        md[i] = (tg_rng_uniform() >= b->drop_path_rate) ? inv_keep : 0.0f;
+    Tensor *dp_1t = tg_expand_dim(dp_mask, 1, T);   /* [B, T, 1] */
+    Tensor *dp_btc = tg_expand_dim(dp_1t, 2, C);    /* [B, T, C] */
+    A = tg_mul(A, dp_btc);
+}
 ```
 
 Apply identically to the `F2` drop-path block.
@@ -105,7 +117,7 @@ Apply identically to the `F2` drop-path block.
 
 **Problem:** After the parallel softmax phase, 255 threads go idle while thread 0 loops serially over `cols` (up to 50 000+) to compute the row loss. For large vocabularies this is a significant serial tail.
 
-**Fix:** Once `log_sum_exp` is available in shared memory (from H1), all threads can participate in the loss accumulation using the same stride-loop + shared-memory tree-reduce pattern already used for the max and sum phases:
+**Fix:** Once `log_sum_exp` is in registers (from H1 for the dense kernel; already present at line 1073 for the sparse kernel), all threads can participate in the loss accumulation using the same stride-loop + shared-memory tree-reduce pattern already used for the max and sum phases:
 
 ```c
 // All threads: accumulate stripe
@@ -122,7 +134,7 @@ for (int s = BLOCK/2; s > 0; s >>= 1) {
 if (threadIdx.x == 0) atomicAdd(loss_acc, smem[0] / (float)rows);
 ```
 
-Apply the same pattern to the sparse CE kernel using `target = (j == id) ? (1.0f - smoothing) : off`.
+Apply the same pattern to the sparse CE kernel. The sparse kernel already computes `log_sum_exp` in registers (line 1073) — no H1 prerequisite. `off` is already computed at the kernel's top as `cols > 1 ? smoothing / (float)(cols - 1) : 0.0f`. The per-column target expression is `target = (j == id) ? (1.0f - smoothing) : off`.
 
 ---
 
@@ -179,3 +191,8 @@ Spot-checks after the build:
 - `test_cross_entropy_value` — CPU loss value unchanged (H1 does not affect CPU path)
 - `test_cuda_new_ops` — CUDA CE loss now matches CPU exactly for the same inputs
 - `test_drop_path_inference_noop` and `test_drop_path_rate_schedule` — drop-path schedule and inference no-op still correct after M3 refactor
+- H2: `grep -r "cuda_layer_norm_rows_fwd\|cuda_layer_norm_rows_bwd" src/` returns no matches — confirms dead launchers are gone
+- M1: build succeeds and all tests pass; `CUDA_CHECK(cudaGetLastError())` is passive and fires on the next CUDA call after a bad launch, so no existing test will trigger it deliberately — verify by code inspection that every launch site in `cuda_ops.cu` is followed by a check
+- M2: code inspection — confirm the overflow guard appears immediately after the `nel`-computation loop in `tg_new` and after the `batch` computation in `backward_matmul`
+
+**Note:** After the T-series tests land, update the test-count line in `CLAUDE.md` from "48 tests" to "68 tests".

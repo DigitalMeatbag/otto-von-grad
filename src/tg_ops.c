@@ -148,6 +148,8 @@ static void backward_matmul(Tensor *self) {
     int K = A->shape[A->ndim - 1];
     int N = B->shape[B->ndim - 1];
     int batch = tg_numel(A) / (M * K);
+    if (batch <= 0)
+        ovg_fatal("backward_matmul: batch computation overflowed int");
     int same_ndim = (A->ndim == B->ndim);
 
 #ifdef OVG_CUDA_ENABLED

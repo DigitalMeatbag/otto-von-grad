@@ -1,9 +1,18 @@
 #ifdef OVG_CUDA_ENABLED
 
 #include "cuda_ops.h"
+#include "ovg_error.h"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
+
+#define CUDA_CHECK(call) do { \
+    cudaError_t _e = (call); \
+    if (_e != cudaSuccess) { \
+        ovg_fatal("CUDA error %s:%d: %s", __FILE__, __LINE__, \
+                  cudaGetErrorString(_e)); \
+    } \
+} while (0)
 
 // ── cuBLAS handle (lazy init) ─────────────────────────────────────────────────
 
@@ -224,6 +233,7 @@ void cuda_matmul_forward(const float *A, const float *B, float *C,
     dim3 block(TILE, TILE);
     dim3 grid((n + TILE - 1) / TILE, (m + TILE - 1) / TILE);
     matmul_fwd_kernel<<<grid, block>>>(A, B, C, m, K, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void cuda_matmul_bwd_dA(const float *dC, const float *B, float *dA,
@@ -232,6 +242,7 @@ void cuda_matmul_bwd_dA(const float *dC, const float *B, float *dA,
     dim3 block(TILE, TILE);
     dim3 grid((K + TILE - 1) / TILE, (m + TILE - 1) / TILE);
     matmul_bwd_dA_kernel<<<grid, block>>>(dC, B, dA, m, K, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void cuda_matmul_bwd_dB(const float *A, const float *dC, float *dB,
@@ -240,6 +251,7 @@ void cuda_matmul_bwd_dB(const float *A, const float *dC, float *dB,
     dim3 block(TILE, TILE);
     dim3 grid((n + TILE - 1) / TILE, (K + TILE - 1) / TILE);
     matmul_bwd_dB_kernel<<<grid, block>>>(A, dC, dB, m, K, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // ── Element-wise kernels ──────────────────────────────────────────────────────
@@ -350,52 +362,86 @@ __global__ void cast_bf16_to_f32_k(const __nv_bfloat16 *in, float *out, int n) {
 
 void cuda_cast_f32_to_bf16(const float *in, void *out_bf16, int n) {
     cast_f32_to_bf16_k<<<blocks(n),BLOCK>>>(in, (__nv_bfloat16 *)out_bf16, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_cast_bf16_to_f32(const void *in_bf16, float *out, int n) {
     cast_bf16_to_f32_k<<<blocks(n),BLOCK>>>((const __nv_bfloat16 *)in_bf16, out, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 
-void cuda_add_fwd(const float *a, const float *b, float *o, int n)
-    { add_fwd_k<<<blocks(n),BLOCK>>>(a,b,o,n); }
-void cuda_add_bwd(const float *g, float *da, float *db, int n)
-    { add_bwd_k<<<blocks(n),BLOCK>>>(g,da,db,n); }
+void cuda_add_fwd(const float *a, const float *b, float *o, int n) {
+    add_fwd_k<<<blocks(n),BLOCK>>>(a,b,o,n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_add_bwd(const float *g, float *da, float *db, int n) {
+    add_bwd_k<<<blocks(n),BLOCK>>>(g,da,db,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
-void cuda_sub_fwd(const float *a, const float *b, float *o, int n)
-    { sub_fwd_k<<<blocks(n),BLOCK>>>(a,b,o,n); }
-void cuda_sub_bwd(const float *g, float *da, float *db, int n)
-    { sub_bwd_k<<<blocks(n),BLOCK>>>(g,da,db,n); }
+void cuda_sub_fwd(const float *a, const float *b, float *o, int n) {
+    sub_fwd_k<<<blocks(n),BLOCK>>>(a,b,o,n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_sub_bwd(const float *g, float *da, float *db, int n) {
+    sub_bwd_k<<<blocks(n),BLOCK>>>(g,da,db,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
-void cuda_mul_fwd(const float *a, const float *b, float *o, int n)
-    { mul_fwd_k<<<blocks(n),BLOCK>>>(a,b,o,n); }
+void cuda_mul_fwd(const float *a, const float *b, float *o, int n) {
+    mul_fwd_k<<<blocks(n),BLOCK>>>(a,b,o,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 void cuda_mul_bwd(const float *a, const float *b, const float *g,
-                  float *da, float *db, int n)
-    { mul_bwd_k<<<blocks(n),BLOCK>>>(a,b,g,da,db,n); }
+                  float *da, float *db, int n) {
+    mul_bwd_k<<<blocks(n),BLOCK>>>(a,b,g,da,db,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
-void cuda_scale_fwd(const float *a, float s, float *o, int n)
-    { scale_fwd_k<<<blocks(n),BLOCK>>>(a,s,o,n); }
-void cuda_scale_bwd(const float *g, float s, float *da, int n)
-    { scale_bwd_k<<<blocks(n),BLOCK>>>(g,s,da,n); }
+void cuda_scale_fwd(const float *a, float s, float *o, int n) {
+    scale_fwd_k<<<blocks(n),BLOCK>>>(a,s,o,n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_scale_bwd(const float *g, float s, float *da, int n) {
+    scale_bwd_k<<<blocks(n),BLOCK>>>(g,s,da,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
-void cuda_pow_fwd(const float *a, float p, float *o, int n)
-    { pow_fwd_k<<<blocks(n),BLOCK>>>(a,p,o,n); }
-void cuda_pow_bwd(const float *a, const float *g, float p, float *da, int n)
-    { pow_bwd_k<<<blocks(n),BLOCK>>>(a,g,p,da,n); }
+void cuda_pow_fwd(const float *a, float p, float *o, int n) {
+    pow_fwd_k<<<blocks(n),BLOCK>>>(a,p,o,n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_pow_bwd(const float *a, const float *g, float p, float *da, int n) {
+    pow_bwd_k<<<blocks(n),BLOCK>>>(a,g,p,da,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
-void cuda_relu_fwd(const float *a, float *o, int n)
-    { relu_fwd_k<<<blocks(n),BLOCK>>>(a,o,n); }
-void cuda_relu_bwd(const float *a, const float *g, float *da, int n)
-    { relu_bwd_k<<<blocks(n),BLOCK>>>(a,g,da,n); }
+void cuda_relu_fwd(const float *a, float *o, int n) {
+    relu_fwd_k<<<blocks(n),BLOCK>>>(a,o,n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_relu_bwd(const float *a, const float *g, float *da, int n) {
+    relu_bwd_k<<<blocks(n),BLOCK>>>(a,g,da,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
-void cuda_tanh_fwd(const float *a, float *o, int n)
-    { tanh_fwd_k<<<blocks(n),BLOCK>>>(a,o,n); }
-void cuda_tanh_bwd(const float *out, const float *g, float *da, int n)
-    { tanh_bwd_k<<<blocks(n),BLOCK>>>(out,g,da,n); }
+void cuda_tanh_fwd(const float *a, float *o, int n) {
+    tanh_fwd_k<<<blocks(n),BLOCK>>>(a,o,n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_tanh_bwd(const float *out, const float *g, float *da, int n) {
+    tanh_bwd_k<<<blocks(n),BLOCK>>>(out,g,da,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
-void cuda_gelu_fwd(const float *a, float *out, int n)
-    { gelu_fwd_k<<<blocks(n),BLOCK>>>(a,out,n); }
-void cuda_gelu_bwd(const float *a, const float *g, float *da, int n)
-    { gelu_bwd_k<<<blocks(n),BLOCK>>>(a,g,da,n); }
+void cuda_gelu_fwd(const float *a, float *out, int n) {
+    gelu_fwd_k<<<blocks(n),BLOCK>>>(a,out,n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_gelu_bwd(const float *a, const float *g, float *da, int n) {
+    gelu_bwd_k<<<blocks(n),BLOCK>>>(a,g,da,n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
 // ── Transpose ────────────────────────────────────────────────────────────────
 
@@ -416,11 +462,13 @@ void cuda_transpose_fwd(const float *a, float *o, int rows, int cols) {
     dim3 blk(16, 16);
     dim3 grd((cols+15)/16, (rows+15)/16);
     transpose_k<<<grd,blk>>>(a, o, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_transpose_bwd(const float *g, float *da, int out_rows, int out_cols) {
     dim3 blk(16, 16);
     dim3 grd((out_cols+15)/16, (out_rows+15)/16);
     transpose_bwd_k<<<grd,blk>>>(g, da, out_rows, out_cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // ── General N-D transpose (any ndim ≤ 4, any two axes) ───────────────────────
@@ -485,11 +533,13 @@ void cuda_transpose_nd_fwd(const float *a, float *out,
                             int ndim, int s0, int s1, int s2, int s3,
                             int dim0, int dim1, int n) {
     transpose_nd_fwd_k<<<blocks(n), BLOCK>>>(a, out, ndim, s0, s1, s2, s3, dim0, dim1, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_transpose_nd_bwd(const float *g, float *da,
                             int ndim, int s0, int s1, int s2, int s3,
                             int dim0, int dim1, int n) {
     transpose_nd_bwd_k<<<blocks(n), BLOCK>>>(g, da, ndim, s0, s1, s2, s3, dim0, dim1, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // ── Reductions ────────────────────────────────────────────────────────────────
@@ -526,17 +576,27 @@ __global__ void mean_rows_bwd_k(const float *g, float *da, int rows, int cols) {
     atomicAdd(&da[idx], g[j] / (float)rows);
 }
 
-void cuda_sum_fwd(const float *a, float *out, int n)
-    { sum_fwd_k<<<blocks(n),BLOCK>>>(a, out, n); }
-void cuda_sum_bwd(const float *g, float *da, int n)
-    { broadcast_bwd_k<<<blocks(n),BLOCK>>>(g, da, n, 1.0f); }
-void cuda_mean_bwd(const float *g, float *da, int n)
-    { broadcast_bwd_k<<<blocks(n),BLOCK>>>(g, da, n, 1.0f / (float)n); }
+void cuda_sum_fwd(const float *a, float *out, int n) {
+    sum_fwd_k<<<blocks(n),BLOCK>>>(a, out, n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_sum_bwd(const float *g, float *da, int n) {
+    broadcast_bwd_k<<<blocks(n),BLOCK>>>(g, da, n, 1.0f);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_mean_bwd(const float *g, float *da, int n) {
+    broadcast_bwd_k<<<blocks(n),BLOCK>>>(g, da, n, 1.0f / (float)n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
-void cuda_mean_rows_fwd(const float *a, float *out, int rows, int cols)
-    { mean_rows_fwd_k<<<blocks(cols),BLOCK>>>(a, out, rows, cols); }
-void cuda_mean_rows_bwd(const float *g, float *da, int rows, int cols)
-    { mean_rows_bwd_k<<<blocks(rows*cols),BLOCK>>>(g, da, rows, cols); }
+void cuda_mean_rows_fwd(const float *a, float *out, int rows, int cols) {
+    mean_rows_fwd_k<<<blocks(cols),BLOCK>>>(a, out, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_mean_rows_bwd(const float *g, float *da, int rows, int cols) {
+    mean_rows_bwd_k<<<blocks(rows*cols),BLOCK>>>(g, da, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
+}
 
 // ── Row-wise ops (one block per row, 256 threads) ────────────────────────────
 
@@ -599,84 +659,6 @@ __global__ void softmax_rows_bwd_k(const float *s, const float *dy, float *da,
 
     for (int j = threadIdx.x; j < cols; j += BLOCK)
         atomicAdd(&dxr[j], sr[j] * (dyr[j] - dot));
-}
-
-__global__ void layer_norm_rows_fwd_k(const float *a, float eps, float *out,
-                                       float *inv_std, int rows, int cols) {
-    int row = blockIdx.x;
-    if (row >= rows) return;
-    const float *xr = a   + row * cols;
-    float       *yr = out + row * cols;
-
-    __shared__ float smem[BLOCK];
-
-    // mean
-    float mean = 0.0f;
-    for (int j = threadIdx.x; j < cols; j += BLOCK) mean += xr[j];
-    smem[threadIdx.x] = mean;
-    __syncthreads();
-    for (int s = BLOCK/2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
-        __syncthreads();
-    }
-    mean = smem[0] / (float)cols;
-
-    // variance
-    float var = 0.0f;
-    for (int j = threadIdx.x; j < cols; j += BLOCK) {
-        float c = xr[j] - mean;
-        var += c * c;
-    }
-    smem[threadIdx.x] = var;
-    __syncthreads();
-    for (int s = BLOCK/2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
-        __syncthreads();
-    }
-    float is = 1.0f / sqrtf(smem[0] / (float)cols + eps);
-    if (threadIdx.x == 0) inv_std[row] = is;
-
-    for (int j = threadIdx.x; j < cols; j += BLOCK)
-        yr[j] = (xr[j] - mean) * is;
-}
-
-__global__ void layer_norm_rows_bwd_k(const float *y, const float *dy,
-                                       const float *inv_std, float *dx,
-                                       int rows, int cols) {
-    int row = blockIdx.x;
-    if (row >= rows) return;
-    const float *yr  = y  + row * cols;
-    const float *dyr = dy + row * cols;
-    float       *dxr = dx + row * cols;
-    float is = inv_std[row];
-    float invC = 1.0f / (float)cols;
-
-    __shared__ float smem[BLOCK];
-
-    // mean_dy
-    float mean_dy = 0.0f;
-    for (int j = threadIdx.x; j < cols; j += BLOCK) mean_dy += dyr[j];
-    smem[threadIdx.x] = mean_dy;
-    __syncthreads();
-    for (int s = BLOCK/2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
-        __syncthreads();
-    }
-    mean_dy = smem[0] * invC;
-
-    // mean_dy_y
-    float mean_dy_y = 0.0f;
-    for (int j = threadIdx.x; j < cols; j += BLOCK) mean_dy_y += dyr[j] * yr[j];
-    smem[threadIdx.x] = mean_dy_y;
-    __syncthreads();
-    for (int s = BLOCK/2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x+s];
-        __syncthreads();
-    }
-    mean_dy_y = smem[0] * invC;
-
-    for (int j = threadIdx.x; j < cols; j += BLOCK)
-        atomicAdd(&dxr[j], is * (dyr[j] - mean_dy - yr[j] * mean_dy_y));
 }
 
 __global__ void layer_norm_rows_affine_fwd_k(const float *a, const float *gamma,
@@ -769,28 +751,29 @@ __global__ void layer_norm_rows_affine_bwd_k(const float *xhat, const float *dy,
     }
 }
 
-void cuda_softmax_rows_fwd(const float *a, float *out, int rows, int cols)
-    { softmax_rows_fwd_k<<<rows,BLOCK>>>(a, out, rows, cols); }
+void cuda_softmax_rows_fwd(const float *a, float *out, int rows, int cols) {
+    softmax_rows_fwd_k<<<rows,BLOCK>>>(a, out, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
+}
 void cuda_softmax_rows_bwd(const float *out_data, const float *g, float *da,
-                           int rows, int cols)
-    { softmax_rows_bwd_k<<<rows,BLOCK>>>(out_data, g, da, rows, cols); }
-
-void cuda_layer_norm_rows_fwd(const float *a, float eps, float *out,
-                               float *inv_std, int rows, int cols)
-    { layer_norm_rows_fwd_k<<<rows,BLOCK>>>(a, eps, out, inv_std, rows, cols); }
-void cuda_layer_norm_rows_bwd(const float *y, const float *dy,
-                               const float *inv_std, float *dx, int rows, int cols)
-    { layer_norm_rows_bwd_k<<<rows,BLOCK>>>(y, dy, inv_std, dx, rows, cols); }
+                           int rows, int cols) {
+    softmax_rows_bwd_k<<<rows,BLOCK>>>(out_data, g, da, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
+}
 
 void cuda_layer_norm_rows_affine_fwd(const float *a, const float *gamma, const float *beta,
                                       float eps, float *out, float *cache,
-                                      int rows, int cols)
-    { layer_norm_rows_affine_fwd_k<<<rows,BLOCK>>>(a, gamma, beta, eps, out, cache, rows, cols); }
+                                      int rows, int cols) {
+    layer_norm_rows_affine_fwd_k<<<rows,BLOCK>>>(a, gamma, beta, eps, out, cache, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
+}
 void cuda_layer_norm_rows_affine_bwd(const float *xhat, const float *dy,
                                       const float *gamma, const float *inv_std,
                                       float *dx, float *dgamma, float *dbeta,
-                                      int rows, int cols)
-    { layer_norm_rows_affine_bwd_k<<<rows,BLOCK>>>(xhat, dy, gamma, inv_std, dx, dgamma, dbeta, rows, cols); }
+                                      int rows, int cols) {
+    layer_norm_rows_affine_bwd_k<<<rows,BLOCK>>>(xhat, dy, gamma, inv_std, dx, dgamma, dbeta, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
+}
 
 // ── Special ops ───────────────────────────────────────────────────────────────
 
@@ -810,10 +793,12 @@ __global__ void causal_mask_bwd_k(const float *g, float *da, int T) {
 void cuda_causal_mask_fwd(const float *a, float *out, int T) {
     dim3 blk(16,16); dim3 grd((T+15)/16,(T+15)/16);
     causal_mask_fwd_k<<<grd,blk>>>(a,out,T);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_causal_mask_bwd(const float *g, float *da, int T) {
     dim3 blk(16,16); dim3 grd((T+15)/16,(T+15)/16);
     causal_mask_bwd_k<<<grd,blk>>>(g,da,T);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // slice_cols: extract columns [col_start, col_start+out_cols) from a
@@ -836,11 +821,13 @@ void cuda_slice_cols_fwd(const float *a, float *out,
                          int rows, int a_cols, int col_start, int out_cols) {
     int n = rows * out_cols;
     slice_cols_fwd_k<<<blocks(n),BLOCK>>>(a, out, rows, a_cols, col_start, out_cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_slice_cols_bwd(const float *g, float *da,
                          int rows, int a_cols, int col_start, int out_cols) {
     int n = rows * out_cols;
     slice_cols_bwd_k<<<blocks(n),BLOCK>>>(g, da, rows, a_cols, col_start, out_cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // concat_cols: copy one part into the concatenated buffer
@@ -863,11 +850,13 @@ void cuda_concat_cols_fwd(const float *src, float *dst,
                           int rows, int src_cols, int total_cols, int col_offset) {
     int n = rows * src_cols;
     concat_fwd_k<<<blocks(n),BLOCK>>>(src, dst, rows, src_cols, total_cols, col_offset);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_concat_cols_bwd(const float *g, float *da,
                           int rows, int src_cols, int total_cols, int col_offset) {
     int n = rows * src_cols;
     concat_bwd_k<<<blocks(n),BLOCK>>>(g, da, rows, src_cols, total_cols, col_offset);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // slice_rows: extract rows [row_start, row_start+out_rows) from a
@@ -890,11 +879,13 @@ void cuda_slice_rows_fwd(const float *a, float *out,
                          int a_rows, int cols, int row_start, int out_rows) {
     int n = out_rows * cols;
     slice_rows_fwd_k<<<blocks(n),BLOCK>>>(a, out, a_rows, cols, row_start, out_rows);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_slice_rows_bwd(const float *g, float *da,
                          int a_rows, int cols, int row_start, int out_rows) {
     int n = out_rows * cols;
     slice_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, a_rows, cols, row_start, out_rows);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // concat_rows: copy one part into the concatenated row buffer
@@ -917,11 +908,13 @@ void cuda_concat_rows_fwd(const float *src, float *dst,
                           int src_rows, int cols, int total_rows, int row_offset) {
     int n = src_rows * cols;
     concat_rows_fwd_k<<<blocks(n),BLOCK>>>(src, dst, src_rows, cols, total_rows, row_offset);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_concat_rows_bwd(const float *g, float *da,
                           int src_rows, int cols, int total_rows, int row_offset) {
     int n = src_rows * cols;
     concat_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, src_rows, cols, total_rows, row_offset);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // repeat_rows: a[1 × cols] → out[n_rows × cols]
@@ -939,10 +932,12 @@ __global__ void repeat_rows_bwd_k(const float *g, float *da, int n_rows, int col
 void cuda_repeat_rows_fwd(const float *a, float *out, int n_rows, int cols) {
     int n = n_rows * cols;
     repeat_rows_fwd_k<<<blocks(n),BLOCK>>>(a, out, n_rows, cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_repeat_rows_bwd(const float *g, float *da, int n_rows, int cols) {
     int n = n_rows * cols;
     repeat_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, n_rows, cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // repeat_cols: a[rows × 1] → out[rows × n_cols]
@@ -960,10 +955,12 @@ __global__ void repeat_cols_bwd_k(const float *g, float *da, int rows, int n_col
 void cuda_repeat_cols_fwd(const float *a, float *out, int rows, int n_cols) {
     int n = rows * n_cols;
     repeat_cols_fwd_k<<<blocks(n),BLOCK>>>(a, out, rows, n_cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_repeat_cols_bwd(const float *g, float *da, int rows, int n_cols) {
     int n = rows * n_cols;
     repeat_cols_bwd_k<<<blocks(n),BLOCK>>>(g, da, rows, n_cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // cross_entropy: one block per row — computes softmax, then CE loss
@@ -1003,16 +1000,21 @@ __global__ void cross_entropy_fwd_k(const float *logits, const float *targets,
         __syncthreads();
     }
     sum = smem[0];
+    float log_sum_exp = logf(sum) + mx;
     for (int j = threadIdx.x; j < cols; j += BLOCK) row_prb[j] /= sum;
     __syncthreads();
 
-    // CE loss for this row, accumulated by thread 0
-    if (threadIdx.x == 0) {
-        float loss = 0.0f;
-        for (int j = 0; j < cols; j++)
-            loss -= row_tgt[j] * logf(row_prb[j] + 1e-7f);
-        atomicAdd(loss_acc, loss / (float)rows);
+    // All threads accumulate CE loss in parallel
+    float loss_partial = 0.0f;
+    for (int j = threadIdx.x; j < cols; j += BLOCK)
+        loss_partial -= row_tgt[j] * (row_in[j] - log_sum_exp);
+    smem[threadIdx.x] = loss_partial;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
+        __syncthreads();
     }
+    if (threadIdx.x == 0) atomicAdd(loss_acc, smem[0] / (float)rows);
 }
 
 __global__ void cross_entropy_bwd_k(const float *probs, const float *targets,
@@ -1028,11 +1030,13 @@ void cuda_cross_entropy_fwd(const float *logits, const float *targets,
                              float *probs, float *loss_out,
                              int rows, int cols) {
     cross_entropy_fwd_k<<<rows,BLOCK>>>(logits, targets, probs, loss_out, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_cross_entropy_bwd(const float *probs, const float *targets,
                              const float *g, float *d_logits, int rows, int cols) {
     int n = rows * cols;
     cross_entropy_bwd_k<<<blocks(n),BLOCK>>>(probs, targets, g, d_logits, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 __global__ void cross_entropy_sparse_fwd_k(const float *logits, const float *ids,
@@ -1074,14 +1078,19 @@ __global__ void cross_entropy_sparse_fwd_k(const float *logits, const float *ids
     for (int j = threadIdx.x; j < cols; j += BLOCK) row_prb[j] /= sum;
     __syncthreads();
 
-    if (threadIdx.x == 0) {
-        float loss = 0.0f;
-        for (int j = 0; j < cols; j++) {
-            float target = (j == id) ? (1.0f - smoothing) : off;
-            loss -= target * (row_in[j] - log_sum_exp);
-        }
-        atomicAdd(loss_acc, loss / (float)rows);
+    // All threads accumulate CE loss in parallel
+    float loss_partial = 0.0f;
+    for (int j = threadIdx.x; j < cols; j += BLOCK) {
+        float target = (j == id) ? (1.0f - smoothing) : off;
+        loss_partial -= target * (row_in[j] - log_sum_exp);
     }
+    smem[threadIdx.x] = loss_partial;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) atomicAdd(loss_acc, smem[0] / (float)rows);
 }
 
 __global__ void cross_entropy_sparse_bwd_k(const float *probs, const float *ids,
@@ -1102,11 +1111,13 @@ void cuda_cross_entropy_sparse_fwd(const float *logits, const float *ids,
                                    float smoothing, float *probs, float *loss_out,
                                    int rows, int cols) {
     cross_entropy_sparse_fwd_k<<<rows,BLOCK>>>(logits, ids, smoothing, probs, loss_out, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_cross_entropy_sparse_bwd(const float *probs, const float *ids,
                                    const float *g, float smoothing, float *d_logits,
                                    int rows, int cols) {
     cross_entropy_sparse_bwd_k<<<blocks(rows * cols),BLOCK>>>(probs, ids, g, smoothing, d_logits, rows, cols);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // embed: weight[V×C], ids[T] (float-encoded ints) → out[T×C]
@@ -1127,10 +1138,14 @@ __global__ void embed_bwd_k(const float *g, const float *ids, float *dw, int T, 
     atomicAdd(&dw[id * C + c], g[idx]);
 }
 
-void cuda_embed_fwd(const float *weight, const float *ids, float *out, int T, int C)
-    { embed_fwd_k<<<blocks(T * C),BLOCK>>>(weight, ids, out, T, C); }
-void cuda_embed_bwd(const float *g, const float *ids, float *dw, int T, int C)
-    { embed_bwd_k<<<blocks(T * C),BLOCK>>>(g, ids, dw, T, C); }
+void cuda_embed_fwd(const float *weight, const float *ids, float *out, int T, int C) {
+    embed_fwd_k<<<blocks(T * C),BLOCK>>>(weight, ids, out, T, C);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_embed_bwd(const float *g, const float *ids, float *dw, int T, int C) {
+    embed_bwd_k<<<blocks(T * C),BLOCK>>>(g, ids, dw, T, C);
+    CUDA_CHECK(cudaGetLastError());
+}
 
 // dropout: apply pre-computed mask (generated on CPU, stored in cuda_cache)
 __global__ void dropout_fwd_k(const float *a, const float *mask, float *out, int n) {
@@ -1142,10 +1157,14 @@ __global__ void dropout_bwd_k(const float *mask, const float *g, float *da, int 
     if (i < n) atomicAdd(&da[i], mask[i] * g[i]);
 }
 
-void cuda_dropout_fwd(const float *a, const float *mask, float *out, int n)
-    { dropout_fwd_k<<<blocks(n),BLOCK>>>(a, mask, out, n); }
-void cuda_dropout_bwd(const float *mask, const float *g, float *da, int n)
-    { dropout_bwd_k<<<blocks(n),BLOCK>>>(mask, g, da, n); }
+void cuda_dropout_fwd(const float *a, const float *mask, float *out, int n) {
+    dropout_fwd_k<<<blocks(n),BLOCK>>>(a, mask, out, n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_dropout_bwd(const float *mask, const float *g, float *da, int n) {
+    dropout_bwd_k<<<blocks(n),BLOCK>>>(mask, g, da, n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
 // ── Adam optimizer ───────────────────────────────────────────────────────────
 
@@ -1164,6 +1183,7 @@ void cuda_adam_step(float *param, float *m, float *v, const float *grad,
                     int n, float lr, float bc1, float bc2,
                     float beta1, float beta2, float eps) {
     adam_step_k<<<blocks(n),BLOCK>>>(param, m, v, grad, n, lr, bc1, bc2, beta1, beta2, eps);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 __global__ void grad_sumsq_k(const float *grad, float *sum_out, int n) {
@@ -1193,13 +1213,19 @@ __global__ void clip_scale_grad_k(const float *sumsq, float max_norm,
     if (i < n) grad[i] *= scale;
 }
 
-void cuda_grad_sumsq(const float *grad, float *sum_out, int n)
-    { grad_sumsq_k<<<blocks(n),BLOCK>>>(grad, sum_out, n); }
-void cuda_scale_grad(float *grad, float scale, int n)
-    { scale_grad_k<<<blocks(n),BLOCK>>>(grad, scale, n); }
+void cuda_grad_sumsq(const float *grad, float *sum_out, int n) {
+    grad_sumsq_k<<<blocks(n),BLOCK>>>(grad, sum_out, n);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_scale_grad(float *grad, float scale, int n) {
+    scale_grad_k<<<blocks(n),BLOCK>>>(grad, scale, n);
+    CUDA_CHECK(cudaGetLastError());
+}
 void cuda_clip_scale_grad(const float *gpu_sumsq, float max_norm, float eps,
-                           float *grad, int n)
-    { clip_scale_grad_k<<<blocks(n),BLOCK>>>(gpu_sumsq, max_norm, eps, grad, n); }
+                           float *grad, int n) {
+    clip_scale_grad_k<<<blocks(n),BLOCK>>>(gpu_sumsq, max_norm, eps, grad, n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
 // ── BF16 batched GEMM ─────────────────────────────────────────────────────────
 // A, B: __nv_bfloat16 data (passed as void*), C: float output.
@@ -1260,11 +1286,13 @@ void cuda_expand_dim_fwd(const float *a, float *out,
                          int outer, int inner, int n) {
     int total = outer * n * inner;
     expand_dim_fwd_k<<<blocks(total),BLOCK>>>(a, out, outer, inner, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_expand_dim_bwd(const float *g, float *da,
                          int outer, int inner, int n) {
     int total = outer * inner;
     expand_dim_bwd_k<<<blocks(total),BLOCK>>>(g, da, outer, inner, n);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 // ── slice ─────────────────────────────────────────────────────────────────────
@@ -1297,11 +1325,13 @@ void cuda_slice_fwd(const float *a, float *out,
                     int outer, int a_axis, int inner, int start, int len) {
     int total = outer * len * inner;
     slice_fwd_k<<<blocks(total),BLOCK>>>(a, out, outer, a_axis, inner, start, len);
+    CUDA_CHECK(cudaGetLastError());
 }
 void cuda_slice_bwd(const float *g, float *da,
                     int outer, int a_axis, int inner, int start, int len) {
     int total = outer * len * inner;
     slice_bwd_k<<<blocks(total),BLOCK>>>(g, da, outer, a_axis, inner, start, len);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 #endif // OVG_CUDA_ENABLED
