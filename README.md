@@ -109,9 +109,9 @@ All ops return a new `Tensor*` that participates in the computation graph. No si
 
 | Op | Shape | Notes |
 |---|---|---|
-| `tg_softmax(a, axis)` | same → same | softmax along specified axis |
+| `tg_softmax(a, axis)` | same → same | softmax along specified axis (CUDA: last axis only) |
 | `tg_causal_mask(scores)` | `[...,T,T]` → same | -1e9 on future positions; last two dims must be equal |
-| `tg_layer_norm(a, gamma, beta, eps)` | same → same | normalizes over `ndim-1`; gamma/beta last dim must match a's last dim |
+| `tg_layer_norm(a, gamma, beta, eps)` | same → same | normalizes over `ndim-1`; gamma/beta must have exactly C elements (C = a's last dim), typically `[1,C]`; do not pre-expand to a's full shape |
 
 #### Loss
 
@@ -200,7 +200,7 @@ Tensor  *tg_block_forward(TgBlock *b, Tensor *X);
 `TgBlock.dropout` (float, default 0) — set after creation to enable dropout.
 `TgBlock.drop_path_rate` (float, default 0) — stochastic depth; applied to residual branches during training. Set automatically by `tg_transformer_create_encoder`.
 
-LayerNorm `gamma`/`beta` are `[1, C]`; the block expands them to `[B, T, C]` via `tg_reshape` + `tg_expand_dim` before each norm. FFN biases `B1`/`B2` are `[1, ffn_dim]`/`[1, C]` and expanded the same way. `seq_len` is accepted but ignored (bias shapes are no longer seq-len-specific).
+LayerNorm `gamma`/`beta` are `[1, C]` and are passed directly to `tg_layer_norm` — no expansion. FFN biases `B1`/`B2` are `[1, ffn_dim]`/`[1, C]` and expanded to `[B, T, ffn_dim]`/`[B, T, C]` via `tg_reshape` + `tg_expand_dim` for `tg_add`. `seq_len` is accepted but ignored (bias shapes are no longer seq-len-specific).
 
 ### TgTransformer (`tg_transformer.h`)
 
