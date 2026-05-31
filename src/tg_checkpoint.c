@@ -3,6 +3,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef OVG_CUDA_ENABLED
+#  include "tg_cuda.h"
+#endif
+
 /* Binary format v2 (little-endian):
    [uint32] magic = 0x00475632 ("OVG2", version 2)
    [int32]  n     (param count)
@@ -22,6 +26,9 @@ int tg_checkpoint_save(const char *path, Tensor **params, int n) {
         fwrite(&cnt,   sizeof cnt,   1, f) != 1) goto io_err;
 
     for (int i = 0; i < n; i++) {
+#ifdef OVG_CUDA_ENABLED
+        if (params[i]->on_cuda) tg_from_cuda(params[i]);
+#endif
         int32_t nd = (int32_t)params[i]->ndim;
         int32_t sh[TG_MAX_DIMS];
         memset(sh, 0, sizeof sh);
@@ -76,6 +83,9 @@ int tg_checkpoint_load(const char *path, Tensor **params, int n) {
         }
         size_t nel = (size_t)tg_numel(params[i]);
         if (fread(TG_DATAF(params[i]), sizeof(float), nel, f) != nel) goto io_err;
+#ifdef OVG_CUDA_ENABLED
+        if (params[i]->on_cuda) tg_to_cuda(params[i]);
+#endif
     }
     fclose(f);
     return 0;

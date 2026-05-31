@@ -5,6 +5,10 @@
 #include "tg_rng.h"
 #include <string.h>
 
+#ifdef OVG_CUDA_ENABLED
+#  include "tg_cuda.h"
+#endif
+
 static void test_argmax_basic(void) {
     Tensor *t = tg_new(2, (int[]){1, 3});
     float *td = TG_DATAF(t);
@@ -70,10 +74,40 @@ static void test_generate_restores_training_flag(void) {
     tg_gpt_free(&gpt);
 }
 
+#ifdef OVG_CUDA_ENABLED
+static void test_argmax_cuda(void) {
+    Tensor *t = tg_new(2, (int[]){1, 3});
+    float *td = TG_DATAF(t);
+    td[0] = 0.1f; td[1] = 0.9f; td[2] = 0.3f;
+    tg_to_cuda(t);
+    /* Zero host buffer to prove sampling reads from device, not stale host */
+    td[0] = 0.0f; td[1] = 0.0f; td[2] = 0.0f;
+    OVG_CHECK_EQ(tg_sample_argmax(t, 0), 1);
+    tg_cuda_free(t);
+    tg_free(t);
+}
+
+static void test_topk_cuda(void) {
+    Tensor *t = tg_new(2, (int[]){1, 4});
+    float *td = TG_DATAF(t);
+    td[0] = 0.1f; td[1] = 0.5f; td[2] = 0.9f; td[3] = 0.2f;
+    tg_to_cuda(t);
+    td[0] = 0.0f; td[1] = 0.0f; td[2] = 0.0f; td[3] = 0.0f;
+    for (int trial = 0; trial < 10; trial++)
+        OVG_CHECK_EQ(tg_sample_topk(t, 0, 0.5f, 1), 2);
+    tg_cuda_free(t);
+    tg_free(t);
+}
+#endif
+
 void run_sample_tests(int *passed, int *failed) {
-    RUN_TEST(test_argmax_basic,                  passed, failed);
-    RUN_TEST(test_topk_1_deterministic,          passed, failed);
-    RUN_TEST(test_topk_range,                    passed, failed);
-    RUN_TEST(test_generate_callback_count,       passed, failed);
+    RUN_TEST(test_argmax_basic,                    passed, failed);
+    RUN_TEST(test_topk_1_deterministic,            passed, failed);
+    RUN_TEST(test_topk_range,                      passed, failed);
+    RUN_TEST(test_generate_callback_count,         passed, failed);
     RUN_TEST(test_generate_restores_training_flag, passed, failed);
+#ifdef OVG_CUDA_ENABLED
+    RUN_TEST(test_argmax_cuda,                     passed, failed);
+    RUN_TEST(test_topk_cuda,                       passed, failed);
+#endif
 }

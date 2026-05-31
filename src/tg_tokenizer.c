@@ -33,6 +33,18 @@ TgVocab tg_vocab_build(const char *text, int len) {
     return v;
 }
 
+TgVocab tg_vocab_from_chars(const char *chars) {
+    TgVocab v;
+    memset(v.ids, -1, sizeof(v.ids));
+    v.size = 0;
+    unsigned char seen[256] = {0};
+    for (int i = 0; chars[i] != '\0'; i++) seen[(unsigned char)chars[i]] = 1;
+    for (int c = 0; c < 256; c++) {
+        if (seen[c]) { v.chars[v.size] = (char)c; v.ids[c] = v.size++; }
+    }
+    return v;
+}
+
 int tg_vocab_encode(const TgVocab *v, char c) {
     int id = v->ids[(unsigned char)c];
     if (id < 0) ovg_fatal("tg_vocab_encode: unknown char 0x%02x", (unsigned char)c);
