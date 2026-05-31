@@ -6,9 +6,16 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef OVG_CUDA_ENABLED
+#  include "tg_cuda.h"
+#endif
+
 int tg_sample_argmax(const Tensor *logits, int row) {
     if (!logits || logits->ndim != 2 || row < 0 || row >= logits->shape[0])
         ovg_fatal("tg_sample_argmax: invalid arguments");
+#ifdef OVG_CUDA_ENABLED
+    if (logits->on_cuda) tg_from_cuda((Tensor *)logits);
+#endif
     int V = logits->shape[1];
     const float *d = TG_DATAF(logits);
     int   best     = 0;
@@ -25,6 +32,9 @@ int tg_sample_topk(const Tensor *logits, int row, float temperature, int top_k) 
         ovg_fatal("tg_sample_topk: invalid arguments");
     if (temperature <= 0.0f)
         ovg_fatal("tg_sample_topk: temperature must be > 0");
+#ifdef OVG_CUDA_ENABLED
+    if (logits->on_cuda) tg_from_cuda((Tensor *)logits);
+#endif
 
     int V = logits->shape[1];
     const float *d = TG_DATAF(logits);

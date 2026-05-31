@@ -14,6 +14,11 @@ char    *tg_read_file(const char *path, int *out_len);
 /* Build a vocab from every unique byte in text[0..len). */
 TgVocab  tg_vocab_build(const char *text, int len);
 
+/* Build a vocab from a fixed null-terminated charset string.
+   Characters are assigned ids in ascending ASCII order, matching
+   tg_vocab_build. Use this to pin vocab across training phases. */
+TgVocab  tg_vocab_from_chars(const char *chars);
+
 /* Encode a single character; calls ovg_fatal on unknown char. */
 int      tg_vocab_encode(const TgVocab *v, char c);
 

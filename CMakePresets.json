@@ -44,7 +44,8 @@
     {
       "name": "cpu",
       "displayName": "Build CPU-only Release",
-      "configurePreset": "cpu"
+      "configurePreset": "cpu",
+      "configuration": "Release"
     }
   ],
   "testPresets": [

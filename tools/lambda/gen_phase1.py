@@ -8,9 +8,9 @@ Generates well-formed lambda expressions and writes them as plain text
 Vocabulary (30 chars): a-h, \\, ., (, ), space, newline.
 
 Usage:
-    python gen_phase1.py                          # 100k closed terms, depth 1-5
+    python gen_phase1.py                          # 100k unique closed terms, depth 1-5
     python gen_phase1.py --count 500000
-    python gen_phase1.py --max-depth 7
+    python gen_phase1.py --min-depth 2 --max-depth 7
     python gen_phase1.py --open                   # allow free variables
     python gen_phase1.py --output path/to/out.txt
 """
@@ -73,6 +73,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--count", type=int, default=100_000, metavar="N",
                    help="Number of expressions to generate (default: 100000)")
+    p.add_argument("--min-depth", type=int, default=1, metavar="D",
+                   help="Minimum AST depth (default: 1)")
     p.add_argument("--max-depth", type=int, default=5, metavar="D",
                    help="Maximum AST depth (default: 5)")
     p.add_argument("--seed", type=int, default=42,
@@ -84,23 +86,33 @@ def main() -> None:
                    help="Output file path")
     args = p.parse_args()
 
+    if args.min_depth < 1:
+        p.error("--min-depth must be >= 1")
+    if args.max_depth < args.min_depth:
+        p.error("--max-depth must be >= --min-depth")
+
     random.seed(args.seed)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     sampler = sample_closed if args.closed_only else sample_open
 
+    seen: set[str] = set()
     written = 0
     with open(args.output, "w", encoding="ascii", newline="\n") as f:
         while written < args.count:
-            d = random.randint(1, args.max_depth)
+            d = random.randint(args.min_depth, args.max_depth)
             t = sampler(d)
-            f.write(pretty(t) + "\n")
+            s = pretty(t)
+            if s in seen:
+                continue
+            seen.add(s)
+            f.write(s + "\n")
             written += 1
 
             if written % 10_000 == 0:
                 print(f"  {written:>8,} / {args.count:,}", file=sys.stderr)
 
-    print(f"Wrote {written:,} expressions → {args.output}", file=sys.stderr)
+    print(f"Wrote {written:,} unique expressions → {args.output}", file=sys.stderr)
 
 
 if __name__ == "__main__":
