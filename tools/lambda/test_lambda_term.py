@@ -1,70 +1,55 @@
 #!/usr/bin/env python3
 """Tests for parse() and alpha_equiv() in lambda_term.py."""
-import sys
-from lambda_term import Abs, App, Var, alpha_equiv, parse, pretty
+import unittest
 
-failures = 0
-
-def check(label, got, expected):
-    global failures
-    if got != expected:
-        print(f"FAIL  {label}: got {got!r}, expected {expected!r}")
-        failures += 1
-    else:
-        print(f"ok    {label}")
+from lambda_term import Abs, Var, alpha_equiv, parse, pretty
 
 
-# --- parse round-trips ---
+class ParseTests(unittest.TestCase):
+    def test_round_trips(self):
+        cases = [
+            ("a", "a"),
+            ("\\a.a", "\\a.a"),
+            ("(a b)", "(a b)"),
+            ("\\a.\\b.(a b)", "\\a.\\b.(a b)"),
+            ("(\\a.a \\b.b)", "(\\a.a \\b.b)"),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(pretty(parse(source)), expected)
 
-def rt(src):
-    return pretty(parse(src))
+    def test_parse_errors(self):
+        for source in ("", "a b", "(a b", "z"):
+            with self.subTest(source=source):
+                with self.assertRaises(ValueError):
+                    parse(source)
 
-check("var",          rt("a"),             "a")
-check("abs",          rt("\\a.a"),         "\\a.a")
-check("app",          rt("(a b)"),         "(a b)")
-check("abs chain",    rt("\\a.\\b.(a b)"), "\\a.\\b.(a b)")
-check("app abs abs",  rt("(\\a.a \\b.b)"), "(\\a.a \\b.b)")
 
-# --- alpha_equiv ---
+class AlphaEquivalenceTests(unittest.TestCase):
+    def test_equivalent_terms(self):
+        cases = [
+            (Abs("a", Var("a")), Abs("b", Var("b"))),
+            (Abs("a", Abs("a", Var("a"))),
+             Abs("b", Abs("c", Var("c")))),
+            (Abs("a", Abs("b", Var("a"))),
+             Abs("c", Abs("d", Var("c")))),
+            (Abs("a", Var("b")), Abs("c", Var("b"))),
+        ]
+        for left, right in cases:
+            with self.subTest(left=left, right=right):
+                self.assertTrue(alpha_equiv(left, right))
 
-check("\\a.a == \\b.b",
-      alpha_equiv(Abs("a", Var("a")), Abs("b", Var("b"))), True)
+    def test_non_equivalent_terms(self):
+        cases = [
+            (Abs("a", Var("b")), Abs("b", Var("b"))),
+            (Abs("a", Abs("b", Var("a"))),
+             Abs("c", Abs("d", Var("d")))),
+            (Abs("a", Var("b")), Abs("a", Var("c"))),
+        ]
+        for left, right in cases:
+            with self.subTest(left=left, right=right):
+                self.assertFalse(alpha_equiv(left, right))
 
-check("\\a.\\a.a == \\b.\\c.c  (inner binder shadows outer)",
-      alpha_equiv(Abs("a", Abs("a", Var("a"))),
-                  Abs("b", Abs("c", Var("c")))), True)
 
-check("\\a.b != \\b.b  (free b vs bound b)",
-      alpha_equiv(Abs("a", Var("b")), Abs("b", Var("b"))), False)
-
-check("\\a.\\b.a == \\c.\\d.c  (outer var referenced)",
-      alpha_equiv(Abs("a", Abs("b", Var("a"))),
-                  Abs("c", Abs("d", Var("c")))), True)
-
-check("\\a.\\b.a != \\c.\\d.d  (different binder referenced)",
-      alpha_equiv(Abs("a", Abs("b", Var("a"))),
-                  Abs("c", Abs("d", Var("d")))), False)
-
-check("free vars must match by name: \\a.b == \\c.b",
-      alpha_equiv(Abs("a", Var("b")), Abs("c", Var("b"))), True)
-
-check("free vars differ: \\a.b != \\a.c",
-      alpha_equiv(Abs("a", Var("b")), Abs("a", Var("c"))), False)
-
-# --- parse errors ---
-
-def expect_error(label, src):
-    global failures
-    try:
-        parse(src)
-        print(f"FAIL  {label}: expected ValueError, got none")
-        failures += 1
-    except ValueError:
-        print(f"ok    {label}")
-
-expect_error("empty string",      "")
-expect_error("trailing garbage",  "a b")
-expect_error("unclosed app",      "(a b")
-expect_error("bad var char",      "z")
-
-sys.exit(failures)
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

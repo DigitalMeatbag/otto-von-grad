@@ -2,20 +2,20 @@
 """
 Phase 2 lambda calculus corpus generator: single-step beta reduction.
 
-Generates output in 5 progressively harder phases written sequentially
+Generates output in 5 progressively harder blocks written sequentially
 to one file.  Each line: <term> -> <one-step-reduct>
 
-  a  root identity       (\\x.x T) -> T
-  b  root constant       (\\x.B T) -> B       x not free in B
-  c  root substitution   (\\x.body T) -> ...  small body/arg, x free in body
-  d  root beta large     same but larger body/arg depths
-  e  contextual beta     C[(\\x.body T)] -> C[reduct]
+  a  root identity       (\\x.x T) -> T                       default  50 000
+  b  root constant       (\\x.B T) -> B  x not free in B      default  25 000
+  c  root substitution   (\\x.body T) -> ...  small depths     default 150 000
+  d  root beta large     same but larger body/arg depths       default 150 000
+  e  contextual beta     C[(\\x.body T)] -> C[reduct]          default 250 000
 
-Vocabulary (32 chars): a-h, \\, ., (, ), space, -, >, newline.
+Vocabulary: a-h, \\, ., (, ), space, -, >, newline.
 
 Usage:
-    python gen_phase2.py                          # 100k pairs (20k per phase)
-    python gen_phase2.py --count 500000
+    python gen_phase2.py                          # up to 625k unique pairs
+    python gen_phase2.py --count-e 500000         # override one block
     python gen_phase2.py --output path/to/out.txt
 """
 import argparse
@@ -133,8 +133,11 @@ def main() -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--count", type=int, default=100_000, metavar="N",
-                   help="Total pairs (split evenly across 5 phases, default: 100000)")
+    p.add_argument("--count-a", type=int, default=50_000,  metavar="N", help="block a pairs (default: 50000)")
+    p.add_argument("--count-b", type=int, default=25_000,  metavar="N", help="block b pairs (default: 25000)")
+    p.add_argument("--count-c", type=int, default=150_000, metavar="N", help="block c pairs (default: 150000)")
+    p.add_argument("--count-d", type=int, default=150_000, metavar="N", help="block d pairs (default: 150000)")
+    p.add_argument("--count-e", type=int, default=250_000, metavar="N", help="block e pairs (default: 250000)")
     p.add_argument("--max-context-depth", type=int, default=3, metavar="D",
                    help="Max context depth for phase e (default: 3)")
     p.add_argument("--max-arg-depth", type=int, default=3, metavar="D",
@@ -153,20 +156,21 @@ def main() -> None:
     random.seed(args.seed)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    per_phase = args.count // 5
     phase_counts = {
-        'a': per_phase,
-        'b': per_phase,
-        'c': per_phase,
-        'd': per_phase,
-        'e': args.count - 4 * per_phase,
+        'a': args.count_a,
+        'b': args.count_b,
+        'c': args.count_c,
+        'd': args.count_d,
+        'e': args.count_e,
     }
 
     seen: set[str] = set()
     total_written = 0
 
     with open(args.output, "w", encoding="ascii", newline="\n") as f:
-        for phase in ('a', 'b', 'c', 'd', 'e'):
+        for idx, phase in enumerate('abcde'):
+            if idx > 0:
+                f.write("#\n")  # block delimiter — stripped by lambda_main before tokenising
             target = phase_counts[phase]
             cap = target * args.max_attempts_multiplier
             written = 0

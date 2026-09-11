@@ -16,6 +16,10 @@ previous phase's checkpoint (`lambda_main.c` handles staged loading).
 | 4 | Alpha-renaming / capture-avoiding substitution | `=>` rename steps plus `->` beta steps |
 | 5 | Church encodings — arithmetic and booleans | anonymous Church terms using the same rewrite chains |
 
+The runner reserves corpus and checkpoint paths through phase 9, but the
+curriculum is currently specified through phase 5. Only phases 1 and 2 have
+generators and checked-in corpora today.
+
 Vocabulary is pinned across all phases:
 
 ```text
@@ -43,8 +47,16 @@ embedding and output-projection dimensions are stable across staged fine-tuning.
 Shared AST utilities (pretty-printer, free-variable analysis, substitution,
 `beta_step`) live in `lambda_term.py`.
 
-The `parse()` stub in `lambda_term.py` must be implemented before structural
-evaluation can run.
+`lambda_term.py` provides parsing, pretty-printing, substitution,
+single-step beta reduction, and alpha-equivalence. Phase 2 can be evaluated
+per curriculum block with `eval_phase2_blocks.py`; later-phase evaluators and
+Church numeral decoding are not implemented yet.
+
+Run the Python tool tests from the repository root:
+
+```powershell
+python -m unittest discover -s tools/lambda -p "test_*.py" -v
+```
 
 ---
 
@@ -124,7 +136,7 @@ Both modes use greedy decoding.
 
 | Requirement | Needed by |
 |-------------|-----------|
-| `parse()` implementation in `lambda_term.py` | Phase 3 eval |
-| Alpha-equivalence checker | Phase 3 eval |
+| `parse()` implementation in `lambda_term.py` | Phase 3 eval (implemented) |
+| Alpha-equivalence checker | Phase 3 eval (implemented) |
 | Church numeral decoder | Phase 5 eval |
-| Inference-only mode for `lambda_main.c` (prompt → greedy completion) | All phases |
+| Inference-only mode for `lambda_main.c` (prompt or prompt file → greedy completion) | All phases (implemented) |

@@ -59,7 +59,9 @@ static void print_char(char c, void *ud) { (void)ud; putchar(c); }
 
 int main(int argc, char **argv) {
     int phase = 1;
-    const char *prompt = NULL;
+    const char *prompt       = NULL;
+    const char *prompts_file = NULL;
+    int         max_gen      = -1;   /* -1 = use T (set after config) */
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--prompt") == 0) {
@@ -68,11 +70,27 @@ int main(int argc, char **argv) {
                 return 1;
             }
             prompt = argv[++i];
+        } else if (strcmp(argv[i], "--prompts-file") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "--prompts-file requires an argument\n");
+                return 1;
+            }
+            prompts_file = argv[++i];
+        } else if (strcmp(argv[i], "--max-gen") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "--max-gen requires an argument\n");
+                return 1;
+            }
+            max_gen = atoi(argv[++i]);
+            if (max_gen < 1) {
+                fprintf(stderr, "--max-gen must be >= 1\n");
+                return 1;
+            }
         } else {
             int p = atoi(argv[i]);
             if (p < 1 || p > MAX_PHASES) {
                 fprintf(stderr,
-                    "usage: otto_lambda [phase] [--prompt TEXT]  (phase 1-%d)\n",
+                    "usage: otto_lambda [phase] [--prompt TEXT | --prompts-file PATH] [--max-gen N]  (phase 1-%d)\n",
                     MAX_PHASES);
                 return 1;
             }
@@ -80,15 +98,22 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (prompt && prompts_file) {
+        fprintf(stderr, "--prompt and --prompts-file are mutually exclusive\n");
+        return 1;
+    }
+
+    int inference_mode = (prompt != NULL) || (prompts_file != NULL);
+
     const char *corpus_path = CORPUS_PATHS[phase];
     const char *save_path   = CKPT_PATHS[phase];
     /* inference loads the phase's own checkpoint;
        training for phase > 1 starts from the previous phase */
-    const char *load_path   = (prompt || phase == 1) ? CKPT_PATHS[phase]
-                                                      : CKPT_PATHS[phase - 1];
+    const char *load_path   = (inference_mode || phase == 1) ? CKPT_PATHS[phase]
+                                                              : CKPT_PATHS[phase - 1];
 
     /* diagnostics go to stderr in inference mode so stdout stays clean */
-    FILE *diag = prompt ? stderr : stdout;
+    FILE *diag = inference_mode ? stderr : stdout;
 
     TgGPTConfig cfg = {
         .vocab_size = 0,   /* filled after vocab build */
@@ -111,6 +136,7 @@ int main(int argc, char **argv) {
     TgVocab vocab   = tg_vocab_from_chars(LAMBDA_VOCAB);
     cfg.vocab_size  = vocab.size;
     const int T     = cfg.seq_len;
+    if (max_gen < 0) max_gen = T;
 
     TgGPT gpt = tg_gpt_create_from_config(&cfg);
 
@@ -125,7 +151,7 @@ int main(int argc, char **argv) {
     /* Load checkpoint into CPU buffers */
     if (tg_checkpoint_load(load_path, params, n_params) == 0)
         fprintf(diag, "[lambda] loaded %s\n", load_path);
-    else if (prompt) {
+    else if (inference_mode) {
         fprintf(stderr, "[lambda] no checkpoint at %s\n", load_path);
         tg_gpt_free(&gpt);
         free(params);
@@ -136,56 +162,110 @@ int main(int argc, char **argv) {
     /* ------------------------------------------------------------------ */
     /* Inference mode                                                       */
     /* ------------------------------------------------------------------ */
-    if (prompt) {
+    if (inference_mode) {
 #ifdef OVG_CUDA_ENABLED
         for (int i = 0; i < n_params; i++)
             tg_to_cuda(params[i]);
         fprintf(stderr, "[lambda] inference on GPU\n");
 #endif
-        int plen = (int)strlen(prompt);
-        int *ctx = calloc((size_t)T, sizeof(int));
-        if (!ctx) { fprintf(stderr, "out of memory\n"); return 1; }
-
-        int cur; /* next free position in ctx */
-        if (plen <= T) {
-            for (int i = 0; i < plen; i++)
-                ctx[i] = tg_vocab_encode(&vocab, prompt[i]);
-            cur = plen;
-        } else {
-            /* prompt longer than window: use the last T chars */
-            int skip = plen - T;
-            for (int i = 0; i < T; i++)
-                ctx[i] = tg_vocab_encode(&vocab, prompt[skip + i]);
-            cur = T;
-        }
-
-        fputs(prompt, stdout);
-        fflush(stdout);
-
         tg_training = 0;
-        for (int s = 0; s < T; s++) {
-            Tensor *logits = tg_gpt_forward(&gpt, ctx, 1);
-#ifdef OVG_CUDA_ENABLED
-            tg_from_cuda(logits);
-#endif
-            /* read from the last real token while the window is still growing;
-               once full, always read from T-1 */
-            int row  = (cur < T) ? cur - 1 : T - 1;
-            int next = tg_sample_argmax(logits, row);
-            char c   = tg_vocab_decode(&vocab, next);
-            putchar(c);
-            fflush(stdout);
-            if (cur < T) {
-                ctx[cur++] = next;
+
+        if (prompt) {
+            /* --- single prompt --- */
+            int plen = (int)strlen(prompt);
+            int *ctx = calloc((size_t)T, sizeof(int));
+            if (!ctx) { fprintf(stderr, "out of memory\n"); return 1; }
+
+            int cur;
+            if (plen <= T) {
+                for (int i = 0; i < plen; i++)
+                    ctx[i] = tg_vocab_encode(&vocab, prompt[i]);
+                cur = plen;
             } else {
-                for (int i = 0; i < T - 1; i++) ctx[i] = ctx[i + 1];
-                ctx[T - 1] = next;
+                int skip = plen - T;
+                for (int i = 0; i < T; i++)
+                    ctx[i] = tg_vocab_encode(&vocab, prompt[skip + i]);
+                cur = T;
             }
-            tg_free_graph(logits);
-            if (c == '\n') break;
+
+            fputs(prompt, stdout);
+            fflush(stdout);
+
+            for (int s = 0; s < max_gen; s++) {
+                Tensor *logits = tg_gpt_forward(&gpt, ctx, 1);
+#ifdef OVG_CUDA_ENABLED
+                tg_from_cuda(logits);
+#endif
+                int row  = (cur < T) ? cur - 1 : T - 1;
+                int next = tg_sample_argmax(logits, row);
+                char c   = tg_vocab_decode(&vocab, next);
+                putchar(c);
+                fflush(stdout);
+                if (cur < T) { ctx[cur++] = next; }
+                else { for (int i = 0; i < T-1; i++) ctx[i] = ctx[i+1]; ctx[T-1] = next; }
+                tg_free_graph(logits);
+                if (c == '\n') break;
+            }
+            free(ctx);
+
+        } else {
+            /* --- batch prompts from file ---
+               stdout: one completion per line (no prompt echo); newline-terminated.
+               The model loads once; prompts are processed sequentially. */
+            FILE *pf = fopen(prompts_file, "r");
+            if (!pf) {
+                fprintf(stderr, "[lambda] cannot open: %s\n", prompts_file);
+                tg_gpt_free(&gpt);
+                free(params);
+                return 1;
+            }
+
+            char line_buf[8192];
+            int  n_done = 0;
+            while (fgets(line_buf, sizeof(line_buf), pf)) {
+                int plen = (int)strlen(line_buf);
+                while (plen > 0 && (line_buf[plen-1] == '\n' || line_buf[plen-1] == '\r'))
+                    line_buf[--plen] = '\0';
+                if (plen == 0) continue;
+
+                int *ctx = calloc((size_t)T, sizeof(int));
+                if (!ctx) { fprintf(stderr, "out of memory\n"); fclose(pf); return 1; }
+
+                int cur;
+                if (plen <= T) {
+                    for (int i = 0; i < plen; i++)
+                        ctx[i] = tg_vocab_encode(&vocab, line_buf[i]);
+                    cur = plen;
+                } else {
+                    int skip = plen - T;
+                    for (int i = 0; i < T; i++)
+                        ctx[i] = tg_vocab_encode(&vocab, line_buf[skip + i]);
+                    cur = T;
+                }
+
+                for (int s = 0; s < max_gen; s++) {
+                    Tensor *logits = tg_gpt_forward(&gpt, ctx, 1);
+#ifdef OVG_CUDA_ENABLED
+                    tg_from_cuda(logits);
+#endif
+                    int row  = (cur < T) ? cur - 1 : T - 1;
+                    int next = tg_sample_argmax(logits, row);
+                    char c   = tg_vocab_decode(&vocab, next);
+                    if (cur < T) { ctx[cur++] = next; }
+                    else { for (int i = 0; i < T-1; i++) ctx[i] = ctx[i+1]; ctx[T-1] = next; }
+                    tg_free_graph(logits);
+                    if (c == '\n') break;
+                    putchar(c);
+                }
+                putchar('\n');
+                fflush(stdout);
+                free(ctx);
+                n_done++;
+            }
+            fclose(pf);
+            fprintf(stderr, "[lambda] processed %d prompts\n", n_done);
         }
 
-        free(ctx);
 #ifdef OVG_CUDA_ENABLED
         for (int i = 0; i < n_params; i++)
             tg_cuda_free(params[i]);
@@ -202,6 +282,29 @@ int main(int argc, char **argv) {
 
     int   text_len;
     char *text      = tg_read_file(corpus_path, &text_len);
+
+    /* Strip block delimiter lines (lines starting with '#') in-place and record
+       the token position at the start of each new block.  '#' is not in the vocab
+       so these lines must be removed before tokenisation. */
+#define MAX_BLOCK_BOUNDARIES 8
+    int block_boundaries[MAX_BLOCK_BOUNDARIES] = {0};
+    int n_boundaries = 0;
+    {
+        int ri = 0, wi = 0;
+        while (ri < text_len) {
+            if (text[ri] == '#') {
+                if (n_boundaries < MAX_BLOCK_BOUNDARIES)
+                    block_boundaries[n_boundaries++] = wi;
+                while (ri < text_len && text[ri] != '\n') ri++;
+                if (ri < text_len) ri++;
+            } else {
+                text[wi++] = text[ri++];
+            }
+        }
+        text_len = wi;
+        text[wi] = '\0';
+    }
+
     int *all_tokens = tg_tokenize(text, text_len, &vocab);
 
     if (text_len <= T + 1) {
@@ -216,7 +319,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "corpus too small for train/val split\n"); exit(1);
     }
 
-    printf("corpus: %s  (%d chars)\n", corpus_path, text_len);
+    printf("corpus: %s  (%d chars, %d block boundaries)\n",
+           corpus_path, text_len, n_boundaries);
     printf("train tokens: %d  val tokens: %d\n", val_start, val_len);
     printf("baseline ln(%d) ~= %.6f\n", vocab.size, logf((float)vocab.size));
 
@@ -253,10 +357,32 @@ int main(int argc, char **argv) {
     if (!inputs || !targets) { fprintf(stderr, "out of memory\n"); exit(1); }
 
     tg_training = 1;
+    int prev_bucket = -1;
     for (int step = 1; step <= steps; step++) {
-        int stride = max_train / batch_size;
+        /* Curriculum: one stage per steps/5 steps.
+           If block boundaries were found, use them to set active_max so each
+           stage aligns with a real block boundary.  Otherwise fall back to
+           equal 20% splits. */
+        int bucket = (step - 1) * 5 / steps;
+        int active_max;
+        if (n_boundaries >= 4) {
+            active_max = (bucket < n_boundaries)
+                         ? block_boundaries[bucket]
+                         : max_train;
+            if (active_max > max_train) active_max = max_train;
+        } else {
+            active_max = max_train * (bucket + 1) / 5;
+        }
+        if (active_max < 1) active_max = 1;
+        if (bucket != prev_bucket) {
+            printf("[lambda] curriculum bucket %d: active_max = %d tokens\n",
+                   bucket, active_max);
+            prev_bucket = bucket;
+        }
+        int stride = active_max / batch_size;
+        if (stride < 1) stride = 1;
         for (int b = 0; b < batch_size; b++) {
-            int start = ((step * 17) + b * stride) % max_train;
+            int start = ((step * 17) + b * stride) % active_max;
             for (int i = 0; i < T; i++) {
                 inputs [b * T + i] = all_tokens[start + i];
                 targets[b * T + i] = all_tokens[start + i + 1];

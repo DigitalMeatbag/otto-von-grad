@@ -316,7 +316,7 @@ Enabled via `OVG_CUDA=ON`. When enabled:
 cmake --preset default             # configure: VS2026, CUDA, Release
 cmake --build --preset default     # build
 .\build\otto_von_grad.exe          # GPT demo (trains on candide.txt)
-.\build\otto_von_grad_tests.exe    # test suite — 59 tests, exits 0 on all-pass
+.\build\otto_von_grad_tests.exe    # test suite — 73 tests, exits 0 on all-pass
 ```
 
 Non-default presets:
