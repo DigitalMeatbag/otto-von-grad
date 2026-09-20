@@ -137,4 +137,5 @@ include/ovg/   public headers (one per module; prefix tg_, plus ovg_error.h)
 src/           implementation, CUDA kernels, and two private headers
 tests/         test suite (ovg_test.h macros + one file per module)
 examples/      candide.c demo and its corpus
+docs/          FOUNDATION_PLATFORM.md — where the library is going and why
 ```

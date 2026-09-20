@@ -56,6 +56,8 @@ otto-von-grad/
     candide.c                       — GPT training demo; links ovg_lm; saves/resumes checkpoints; builds as `candide`
     data/candide.txt                — corpus for the demo
     data/checkpoints/model.bin      — saved after each demo run (gitignored)
+  docs/
+    FOUNDATION_PLATFORM.md          — platform direction: target layering, open decisions, phased plan
   tests/
     ovg_test.h                      — minimal test assertion macros
     test_ops.c                      — ops forward + backward correctness, BF16, N-D matmul
@@ -86,6 +88,9 @@ Consumers link the narrowest target that has what they need: a vision model link
 links `ovg_lm`, `ottovongrad` is the everything-included default. The intent is for `ovg_lm` to be
 packaged on its own eventually; keep it free of anything a non-LM consumer would need, and keep
 `ovg_core`/`ovg_nn` free of anything that assumes tokens or text.
+
+The target layering, the open design questions, and the phased plan for getting there are in
+`docs/FOUNDATION_PLATFORM.md`. This file describes what exists; that one describes where it is going.
 
 Placing new code:
 
