@@ -56,9 +56,10 @@ Known ceilings carried forward from `AGENTS.md`:
 applications          lambda · vexilloscope · <image-generation repo> · …     (sibling repos)
                              │
 modality packages     ovg_lm · ovg_vision · ovg_diffusion                      (each separable)
+                      gpt/tokenizer/sampler · patch embed/pooling · unet/schedule/sampler
                              │
 building blocks       ovg_nn    linear, attention, transformer block/stack,
-                               patch embedding, pooling, conv / residual blocks, norms
+                               conv / residual blocks, norms
                              │
 engine + harness      ovg_core  tensor, ops (incl. conv family), autograd,
                                optimizers + schedules + accumulation, checkpoint, RNG, CUDA
@@ -114,12 +115,12 @@ The platform is specified in phases, each producing one implementable slice with
 docs/SPEC_PLATFORM_PHASE1_HARNESS.md
 ```
 
-Scope: the training harness (optimizer state as a struct, LR schedules, gradient accumulation helper, checkpoint adoption), followed by migrating `examples/candide.c`, `../lambda`, and `../vexilloscope` onto it. Completion signal: all three consumers train through the harness, and vexilloscope's `main.c` shrinks by the harness code it no longer owns.
+Scope: the training harness (optimizer state as a struct, LR schedules, gradient accumulation helper, checkpoint format v3 with optimizer state and metadata header, exact-resume on by default), followed by migrating `examples/candide.c`, `../lambda`, and `../vexilloscope` onto it. Completion signal: all three consumers train through the harness, and vexilloscope's `main.c` shrinks by the harness code it no longer owns.
 
 ### Phase 1 Non-Goals
 
 - Any new op beyond what the harness itself needs.
-- `TgPatchEmbed` or other vision blocks.
+- `TgPatchEmbed`, `ovg_vision`, or other vision blocks.
 - The conv family.
 - Namespaced includes or package extraction.
 - Performance work (batching in vexilloscope, kernel fusion).
@@ -127,9 +128,9 @@ Scope: the training harness (optimizer state as a struct, LR schedules, gradient
 ### Later Specs
 
 ```text
-SPEC_PLATFORM_PHASE2_NN_BLOCKS.md    # TgLinear fate, TgPatchEmbed + pooling into ovg_nn, vexilloscope adopts them
-SPEC_PLATFORM_PHASE3_CONV.md         # conv family, group_norm, silu/sigmoid, sinusoidal embedding — driven by a first DDPM
-SPEC_PLATFORM_PHASE4_PACKAGES.md     # ovg_vision / ovg_diffusion targets, namespaced includes, extraction readiness
+SPEC_PLATFORM_PHASE2_VISION.md       # TgLinear fix + rename; new ovg_vision target with TgPatchEmbed + pooling; vexilloscope adopts both
+SPEC_PLATFORM_PHASE3_CONV.md         # iterative topo_sort + growable graph; conv family, group_norm, silu/sigmoid, sinusoidal embedding — driven by a first DDPM
+SPEC_PLATFORM_PHASE4_PACKAGES.md     # ovg_diffusion target, namespaced includes, extraction readiness
 ```
 
 Names and boundaries may shift; the principle should not: spec only the next implementable slice.
@@ -145,11 +146,11 @@ Names and boundaries may shift; the principle should not: spec only the next imp
 | `ovg_lm` as the package template | Closed | New modality packages copy `ovg_lm`'s shape: a few modules, links `ovg_nn`, own tests, no data loading. |
 | `ottovongrad` umbrella | Closed | Kept indefinitely as the everything-included default; consumers are encouraged but not required to link a narrower target. |
 | Bare vs. namespaced includes | Closed (deferred) | Stay bare until a package is about to be published separately; then switch in one commit, verifiable by zero `C1083` across consumers. |
-| Training harness placement | Open | See topic. |
-| `TgLinear` fate | Open | See topic. |
+| Training harness placement | Closed | In `ovg_core`, finishing `tg_train.h`. Exact-resume is default on: checkpoints save optimizer state and step; parameter-only v2 files still load with moments rebuilt. |
+| `TgLinear` fate | Closed | Fix in place and rename to `tg_linear.h`: bias `[1, n_out]` expanded at forward, no baked-in batch, no out-parameter. |
 | Conv family scope | Open | See topic. |
-| Vision-block placement | Open | See topic. |
-| Graph and dimension limits | Open | See topic. |
+| Vision-block placement | Closed | Create `ovg_vision` now (Phase 2). Further vision consumers are imminent, which satisfies the second-consumer rule ahead of time. |
+| Graph and dimension limits | Closed | `TG_MAX_DIMS` stays 4 — no plans need more. `topo_sort` goes iterative with growable graph capacity as a Phase 3 prerequisite. |
 
 ---
 
@@ -209,11 +210,17 @@ Same code, own static library linking `ovg_core`. `ovg_nn` does not depend on it
 ### Follow-ups
 
 - Confirm whether lambda's curriculum loop needs anything the vexilloscope harness lacks (e.g. per-phase LR resets) before fixing the schedule API.
-- Decide whether optimizer state belongs in the checkpoint file (resume-exact) or is always rebuilt (simpler, current behaviour). Leaning: optional section, default off.
+- Closed: optimizer state is saved by default (see Decision).
 
 ### Decision
 
-Open. Suggested direction is **Option A** — `tg_train.h` is already the harness's home and the split in Option B has no consumer that would benefit from it yet. Revisit if a consumer ever wants `ovg_nn` without training (e.g. an inference-only deployment target).
+Closed (2026-09-20): **Option A.** The harness lives in `ovg_core`, finishing `tg_train.h`; the split in Option B has no consumer that would benefit from it. Revisit only if a consumer ever wants `ovg_nn` without training.
+
+**Exact-resume is default on.** The owner regularly stops and restarts long runs, so a resumed run must continue from the same optimizer state, not from zeroed moments. Consequences for the Phase 1 spec:
+
+- The checkpoint gains an optimizer-state section (Adam `m`/`v` per parameter, step counter, and the harness's schedule position) and a small metadata header (see Open Questions: self-describing checkpoints). This is format v3 with a new magic; `tg_checkpoint_load` continues to accept v2 parameter-only files and reports that moments were rebuilt.
+- Saving optimizer state is the default; a flag disables it for "weights-only" exports (inference artifacts, sharing).
+- Device-resident moments (`tg_adam_step_gpu`) are synced to host on save; the harness owns that, not the caller.
 
 ---
 
@@ -258,7 +265,7 @@ Remove `tg_mlp.[ch]`; vexilloscope's classifier does `tg_matmul` + bias expansio
 
 ### Decision
 
-Open. Suggested direction is **Option A** with the rename, sequenced in Phase 2 alongside `TgPatchEmbed` so that vexilloscope is touched once.
+Closed (2026-09-20): **Option A, fix in place.** Rename `tg_mlp.h` → `tg_linear.h`; bias becomes `[1, n_out]` and is expanded to the input's leading dims at forward time; the `batch` field and the `xw_out` out-parameter are removed; `tg_linear_params` stays. Sequenced in Phase 2 alongside the vision blocks so vexilloscope is touched once. The reasoning that carried it: every modality package needs a named linear layer, and the inline expansion pattern is short but easy to get wrong.
 
 ---
 
@@ -301,7 +308,7 @@ These are model-agnostic — any ViT, and later the encoder side of a latent dif
 
 ### Decision
 
-Open. Suggested direction is **Option A** now, moving to `ovg_vision` in Phase 4 when there is a second vision consumer or a decision to publish.
+Closed (2026-09-20): **Option B — create `ovg_vision` now, in Phase 2.** The owner has further vision consumers imminent (at minimum the encoder side of an image-generation project), which satisfies the second-consumer rule ahead of time; creating the package while it is ~100 lines is cheaper than extracting it later. `ovg_vision` links `ovg_nn`, mirrors `ovg_lm`'s shape (a few modules, own tests, no data loading), and initially holds `TgPatchEmbed` and the token-pooling helpers. vexilloscope becomes its first consumer and links `ovg_vision` instead of `ovg_nn`.
 
 ---
 
@@ -398,7 +405,7 @@ They have been invisible because every model so far is a modest transformer. The
 
 ### Decision
 
-Open. Suggested direction: keep 4 dims; iterative `topo_sort` with growable capacity as a Phase 3 prerequisite.
+Closed (2026-09-20): **keep `TG_MAX_DIMS = 4`** — the owner has no plans that need a fifth dimension, and spatial attention in a UNet is handled by reshape. **`topo_sort` becomes iterative with a growable node list** as a Phase 3 prerequisite, so a UNet's depth is never bounded by a compile-time constant. Raising `TG_MAX_DIMS` is off the table until a concrete 5D need appears.
 
 ---
 
@@ -419,6 +426,6 @@ Nothing below that line (graph compilation, memory planning, cuDNN) is on the ro
 
 ## Open Questions Not Yet Assigned to a Topic
 
-- Should `tg_checkpoint` carry a small metadata header (model config, step, RNG seed) so a checkpoint is self-describing? Today consumers keep config next to the file by convention.
+- Closed with the harness decision: `tg_checkpoint` format v3 carries a metadata header (step, RNG seed, and a caller-supplied config blob) alongside optimizer state. The exact header fields are a Phase 1 spec question.
 - Does `ovg_lm` need a KV cache before any "focused GPT" is considered done, or is O(T²) generation acceptable at the sequence lengths those projects use?
 - When `ovg_vision` and `ovg_diffusion` exist, does `ovg_lm` keep its name or do all three adopt a common pattern (`ovg_text`?) — cosmetic, decide at Phase 4.
