@@ -11,6 +11,16 @@
 
 int tg_training = 1;
 
+int tg_eval_begin(void) {
+    int prev = tg_training;
+    tg_training = 0;
+    return prev;
+}
+
+void tg_eval_end(int prev_training) {
+    tg_training = prev_training;
+}
+
 /* Depth-first topo sort using the tensor's own visited flag (O(n), not O(n²)). */
 static void topo_sort(Tensor *t, Tensor **topo, int *n) {
     if (t->visited) return;

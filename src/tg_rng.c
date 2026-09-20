@@ -44,6 +44,16 @@ float tg_rng_uniform(void) {
     return tg_rng_xorshift32() / (float)0x100000000ULL;
 }
 
+uint32_t tg_rng_get_state(void) {
+    return s_dropout_rng;
+}
+
+void tg_rng_set_state(uint32_t s) {
+    if (s == 0)
+        ovg_fatal("tg_rng_set_state: xorshift32 state must be non-zero");
+    s_dropout_rng = s;
+}
+
 /* ── Seeding ─────────────────────────────────────────────────────────────── */
 
 void tg_seed(uint32_t seed) {

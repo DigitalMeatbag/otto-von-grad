@@ -6,8 +6,9 @@
 #include "tg_tensor.h"
 #include "tg_cuda.h"
 
-// Device-side plumbing used by tg_ops.c and tg_train.c. Not part of the
-// public surface; consumers use tg_cuda.h. Implemented in tg_cuda.cu.
+// Device-side plumbing used by tg_ops.c, tg_train.c, tg_optim.c and
+// tg_checkpoint.c. Not part of the public surface; consumers use tg_cuda.h.
+// Implemented in tg_cuda.cu.
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,6 +31,12 @@ void tg_cuda_zero_grad(Tensor *t);
 // Small scalar helpers for CUDA-side utility reductions.
 void  tg_cuda_zero_float(float *p);
 float tg_cuda_read_float(float *p);
+
+// Raw device float buffers (optimizer moments from tg_cuda_malloc_floats):
+// bulk host<->device copies and zeroing. Synchronous.
+void tg_cuda_upload_floats(float *dst_dev, const float *src_host, int n);
+void tg_cuda_download_floats(float *dst_host, const float *src_dev, int n);
+void tg_cuda_zero_floats(float *p, int n);
 
 // Set t->cuda_grad[0] = val (used to seed tg_backward for the root loss tensor).
 void tg_cuda_set_grad_scalar(Tensor *t, float val);

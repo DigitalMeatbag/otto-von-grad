@@ -27,10 +27,11 @@ One test file per module, linked against `ovg_lm` so every layer is reachable.
 | `test_main.c` | Entry point; seeds the RNG, calls every suite's `run_*_tests`, prints the summary |
 | `test_ops.c` | Forward and gradient checks for every op (arithmetic, matmul, reductions, layer_norm, softmax, activations, dropout, embed, cross-entropy dense/sparse/no-sync, reshape, expand_dim, slice, concat); shape-mismatch and out-of-bounds error paths via `setjmp`/`longjmp`; layer_norm finite-difference check; drop-path schedule; CUDA: BF16 cast round-trip and matmul, N-D ops, large causal mask |
 | `test_train.c` | SGD direction, `tg_backward` grad zeroing, `tg_backward_accum` accumulation, transpose grad accumulation, grad-norm clipping (CPU and CUDA) |
+| `test_optim.c` | `TgAdam` parity with raw `tg_adam_step`, reset, gradient accumulation vs. batch mean, returned grad norm, step counter, bad-argument fatals; `tg_lr_warmup_cosine` / `tg_lr_warmup_linear` values and the vexilloscope-grid equivalence; eval guard and `TgMeter`; RNG state round-trip; CUDA: device parity, mixed-device fatal |
 | `test_attention.c` | Causal attention gradients (single and multi-head), encoder attention weights, batch=1 vs batched parity, lower-ndim matmul broadcast |
 | `test_gpt.c` | `tg_gpt_collect_params` capacity, forward output shape at batch 1 and batch 2 |
 | `test_tokenizer.c` | Vocab build, encode/decode round-trip, `tg_tokenize` values, `tg_vocab_from_chars` |
-| `test_checkpoint.c` | Save/load round-trip (CPU and CUDA), bad magic rejected, param-count mismatch rejected |
+| `test_checkpoint.c` | Weights-only save/load round-trip (CPU and CUDA), bad magic rejected, param-count mismatch rejected; v3 run-state round-trip, `tg_checkpoint_info` before any model exists, v2 file loads with moments zeroed, `TG_LOAD_INIT_FROM_WEIGHTS`, weights-only ↔ run-state cross-loading, hyperparameter / flag / rng_state rejection, exact resume with dropout, `.tmp` replacement; CUDA: v3 round-trip with device params and moments |
 | `test_sample.c` | Argmax, top-k determinism and range, `tg_generate` callback count and `tg_training` restore; CUDA argmax/top-k |
 
 ## Writing new tests
@@ -78,4 +79,4 @@ Tensors allocated before `longjmp` will leak — acceptable in test code.
 
 Tests guarded with `#ifdef OVG_CUDA_ENABLED` are compiled and run automatically when the library
 is built with `OVG_CUDA=ON` (the `default` and `debug` presets). They are skipped in the `cpu`
-preset, which is why that build reports 71 tests rather than 80.
+preset, which is why that build reports 89 tests rather than 101.

@@ -6,6 +6,15 @@
 /* Set to 0 before inference to disable dropout; 1 (default) during training. */
 extern int tg_training;
 
+/* Eval guard: sets tg_training = 0 and returns the previous value. Pair with tg_eval_end. */
+int  tg_eval_begin(void);
+void tg_eval_end(int prev_training);
+
+/* Running mean for an eval metric. Arithmetic only — the caller writes the loop. */
+typedef struct { double sum; int n; } TgMeter;
+static inline void  tg_meter_add(TgMeter *m, float x) { m->sum += x; m->n += 1; }
+static inline float tg_meter_mean(const TgMeter *m) { return m->n ? (float)(m->sum / m->n) : 0.0f; }
+
 void tg_sgd_step(Tensor **params, int n_params, float lr);
 void tg_adam_step(Tensor **params, float **m, float **v, int n_params,
                   float lr, int step, float beta1, float beta2, float eps);
@@ -21,7 +30,7 @@ void tg_zero_grads(Tensor **params, int n_params);
 // Backward pass that skips the zero-grad phase.
 // Non-persistent intermediate tensors are fresh calloc allocations each forward
 // pass, so their grads are already zero.  Persistent param grads accumulate
-// across calls — caller must zero them first with tg_zero_grads.
+// across calls â€” caller must zero them first with tg_zero_grads.
 void tg_backward_accum(Tensor *root);
 
 // Traverses the computation graph rooted at `root` and frees every non-persistent

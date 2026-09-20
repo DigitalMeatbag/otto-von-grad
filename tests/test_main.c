@@ -7,6 +7,7 @@ int ovg_test_failed = 0;
 
 void run_ops_tests(int *passed, int *failed);
 void run_train_tests(int *passed, int *failed);
+void run_optim_tests(int *passed, int *failed);
 void run_attention_tests(int *passed, int *failed);
 void run_gpt_tests(int *passed, int *failed);
 void run_tokenizer_tests(int *passed, int *failed);
@@ -22,6 +23,9 @@ int main(void) {
 
     printf("=== train ===\n");
     run_train_tests(&passed, &failed);
+
+    printf("=== optim ===\n");
+    run_optim_tests(&passed, &failed);
 
     printf("=== attention ===\n");
     run_attention_tests(&passed, &failed);

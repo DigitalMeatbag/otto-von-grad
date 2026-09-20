@@ -102,6 +102,20 @@ float tg_cuda_read_float(float *p) {
     return v;
 }
 
+void tg_cuda_upload_floats(float *dst_dev, const float *src_host, int n) {
+    CUDA_CHECK(cudaMemcpy(dst_dev, src_host, (size_t)n * sizeof(float),
+                          cudaMemcpyHostToDevice));
+}
+
+void tg_cuda_download_floats(float *dst_host, const float *src_dev, int n) {
+    CUDA_CHECK(cudaMemcpy(dst_host, src_dev, (size_t)n * sizeof(float),
+                          cudaMemcpyDeviceToHost));
+}
+
+void tg_cuda_zero_floats(float *p, int n) {
+    CUDA_CHECK(cudaMemset(p, 0, (size_t)n * sizeof(float)));
+}
+
 __global__ void set_scalar_k(float *dst, float val) { *dst = val; }
 
 void tg_cuda_set_grad_scalar(Tensor *t, float val) {

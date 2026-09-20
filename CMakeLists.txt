@@ -22,6 +22,8 @@ set(OVG_CORE_SOURCES
     src/tg_tensor.c
     src/tg_ops.c
     src/tg_train.c
+    src/tg_optim.c
+    src/tg_sched.c
     src/tg_rng.c
     src/tg_checkpoint.c
     src/ovg_error.c
@@ -97,6 +99,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         tests/test_main.c
         tests/test_ops.c
         tests/test_train.c
+        tests/test_optim.c
         tests/test_attention.c
         tests/test_gpt.c
         tests/test_tokenizer.c
