@@ -12,40 +12,48 @@
 
 ### One line
 
-otto-von-grad is a from-scratch C11 machine-learning platform: an autograd engine, a training harness,
-and small composable packages for language, vision, and image generation — with no dependencies beyond
-a C compiler and, optionally, CUDA.
+otto-von-grad is the shared, from-scratch C11 machine-learning substrate behind a family of focused,
+self-contained applications — built to make those applications easier to audit, reproduce, and deploy
+with a small, controlled dependency surface.
 
 ### Thirty seconds
 
-Most ML work happens on top of PyTorch or JAX: millions of lines you cannot read, a Python runtime, a
-dependency tree you do not control. otto-von-grad is the opposite bet. It is a complete ML stack in a
-few thousand lines of C that one person can hold in their head — every tensor operation written out
-with its gradient beside it, every kernel visible, every model built by hand from the same small set of
-parts.
+otto-von-grad is not intended to be sold as a general-purpose ML framework. It is the internal platform
+used to build focused products for processes where auditability, offline operation, reproducibility, or
+dependency independence matter. Instead of carrying a Python runtime and a large framework into every
+product, each application is built on a compact C stack whose tensor operations, gradients, kernels, and
+model structure can be inspected end to end.
 
-On top of that engine sits a training harness that any project gets for free: optimizers, schedules,
-checkpoints that resume exactly where they stopped. Above that, three lean packages — `ovg_lm` for
-GPT-style language models, `ovg_vision` for vision transformers, `ovg_diffusion` for image generators —
-each independently usable, each a few hundred lines, each proven by a real application built on it.
+The engine and training harness provide the common machinery each application would otherwise rebuild:
+autograd, optimizers, schedules, accumulation, and checkpoints that resume where they stopped. Lean
+modality packages add only the reusable language, vision, or generation components demanded by concrete
+applications. Product-specific data handling, policy, reporting, interfaces, and deployment behavior
+remain in the application repositories.
 
-The result is a platform for building *focused* models: a lambda-calculus reasoner, a flag classifier,
-a small image generator — models trained on a single consumer GPU, where you understand exactly what the
-machine is doing and why, because you can read all of it.
+The result is an application-building advantage: narrow models trained on a single consumer GPU, shipped
+inside products with controlled operational boundaries, and understood deeply enough to support credible
+claims about how each application was built, what it depends on, and how it behaves.
 
-### What makes it a product rather than a hobby
+### What makes it product infrastructure rather than a hobby
 
-The pitch is not "faster than PyTorch." It is **legible**. Every model built on OVG is fully
-inspectable down to the arithmetic, has no supply chain, compiles to a single static binary, and runs
-anywhere a C compiler runs. That makes it the right tool when someone needs to *own* a model end to end
-— embedded, air-gapped, auditable, taught, or simply understood — rather than rent one.
+OVG is not the product a customer buys; the focused application built on it is. OVG earns its place by
+making successive applications faster to build and easier to own end to end. Its differentiator is
+**legibility**: the implementation is inspectable down to the arithmetic, CPU deployments can have a
+very small dependency surface, and optional acceleration dependencies are explicit. That foundation
+helps each application support stronger claims about auditability, offline operation, reproducibility,
+and deployment control than would be practical with a general-purpose ML stack.
+
+The platform succeeds when product code is dominated by the customer's process and policy rather than
+repeated ML plumbing, and when a shipped application can be reviewed, rebuilt, and operated within a
+clearly defined boundary. Operator count, modality breadth, and third-party framework adoption are not
+success metrics by themselves.
 
 ### Claims the pitch may make, and the evidence behind each
 
 | Claim | Basis today | Watch |
 |---|---|---|
 | Complete stack in a few thousand lines | ~7k lines including tests and CUDA kernels | Roughly doubles through Phase 3; re-count before quoting a number. |
-| No dependencies beyond a C compiler (+ optional CUDA) | True; cuDNN is explicitly excluded by decision | Keep it true — the conv-family decision depends on it. |
+| Small, controlled dependency surface | CPU uses the C toolchain/runtime; acceleration adds the CUDA toolkit, runtime, driver, and cuBLAS | Keep dependencies explicit and bounded; do not describe this as "no supply chain." |
 | Every op has its gradient beside it | Enforced coding rule; 80 tests | — |
 | Exact resume from any checkpoint | Decided (Phase 1); not yet built | Do not claim until Phase 1 ships. |
 | Independently usable modality packages | `ovg_lm` exists; `ovg_vision` Phase 2; `ovg_diffusion` Phase 4 | One of three today. |
@@ -67,12 +75,12 @@ anywhere a C compiler runs. That makes it the right tool when someone needs to *
 
 Product investigations should test these rather than assume them:
 
-- **People who need to understand a model, not just run one** — educators, researchers writing about
-  training dynamics, engineers who have been burned by an opaque framework.
-- **Constrained or controlled environments** — embedded targets, air-gapped systems, contexts where a
-  dependency audit of PyTorch is a non-starter but a few thousand lines of C is reviewable.
-- **Builders of narrow models** who want a single-binary artifact with no runtime: a classifier in a
-  Discord bot (vexilloscope's actual deployment), a domain-specific reasoner, a small generator.
+- **Operators of constrained or controlled processes** — embedded targets, air-gapped systems, and
+  environments where a large runtime and dependency tree are difficult to approve or operate.
+- **Teams that need to own an application end to end** — including its model, deployment boundary,
+  update path, and evidence about how it was trained and evaluated.
+- **Users with a narrow, valuable workflow** that can be served by a focused classifier, reasoner, or
+  generator running locally instead of a general-purpose remote model.
 
 ---
 
