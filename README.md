@@ -313,8 +313,13 @@ cmake --preset debug  && cmake --build --preset debug   # Debug + CUDA
 cmake --preset cpu    && cmake --build --preset cpu     # Release, CPU-only
 ```
 
-CMake produces three targets:
-- `ottovongrad` — static library (links `CUDA::cudart CUDA::cublas` when CUDA enabled)
+CMake produces the library as three layered static targets plus an umbrella:
+- `ovg_core` — tensor, autograd ops, optimizers, RNG, checkpoint I/O, error handler; CUDA kernels and `CUDA::cudart CUDA::cublas` when CUDA enabled
+- `ovg_nn` — `TgLinear`, `TgSelfAttention`, `TgBlock`, `TgTransformer` (links `ovg_core`)
+- `ovg_lm` — `TgGPT`, tokenizer, sampling (links `ovg_nn`)
+- `ottovongrad` — INTERFACE target that pulls in all three
+
+and two executables:
 - `otto_von_grad` — GPT character-level demo (candide.txt); reports train/val loss, generates text, saves checkpoint
 - `otto_von_grad_tests` — test suite
 
@@ -370,8 +375,10 @@ if(NOT TARGET ottovongrad)
     add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../otto-von-grad"
                      "${CMAKE_CURRENT_BINARY_DIR}/otto-von-grad")
 endif()
-target_link_libraries(your_target PRIVATE ottovongrad)
+target_link_libraries(your_target PRIVATE ottovongrad)   # or ovg_core / ovg_nn / ovg_lm
 ```
+
+Link the narrowest layer you need: `ovg_nn` for a vision model, `ovg_lm` for a GPT, `ottovongrad` for everything.
 
 Or via FetchContent:
 

@@ -2,13 +2,11 @@
 
 # otto-von-grad
 
-A lightweight tensor autograd engine written in C (C11). This file is the single source of truth for any coding agent working in this repo (`CLAUDE.md` imports it verbatim).
-
-Implements reverse-mode autodiff, N-D tensors (up to 4D), batched multi-head self-attention, transformer blocks, a GPT-style language model, and optional CUDA acceleration via cuBLAS. No external ML libraries.
+A lightweight tensor autograd engine and neural-network toolkit written in C (C11), built as three layers: `ovg_core` (reverse-mode autodiff over N-D tensors up to 4D, optimizers, checkpoints, optional CUDA/cuBLAS), `ovg_nn` (linear, batched multi-head attention, transformer blocks), and `ovg_lm` (GPT-style language model, byte tokenizer, sampling). No external ML libraries. This file is the single source of truth for any coding agent working in this repo (`CLAUDE.md` imports it verbatim).
 
 Optional CUDA acceleration via `OVG_CUDA=ON`.
 
-This repo is a **library**. It is consumed by sibling repos checked out next to it (`../vexilloscope`, a ViT classifier; `../lambda`, a lambda-calculus GPT curriculum) via `add_subdirectory(../otto-von-grad)` and `target_link_libraries(... ottovongrad)`. Application code, experiments, and corpora belong in those repos, not here. The only application here is `src/main.c`, the candide.txt GPT demo that doubles as the end-to-end smoke test.
+This repo is a **library**, built as three layered CMake targets (`ovg_core` → `ovg_nn` → `ovg_lm`, see [Library Layers](#library-layers)). It is consumed by sibling repos checked out next to it (`../vexilloscope`, a ViT classifier; `../lambda`, a lambda-calculus GPT curriculum) via `add_subdirectory(../otto-von-grad)` and `target_link_libraries(... ottovongrad)`. Application code, experiments, and corpora belong in those repos, not here. The only application here is `src/main.c`, the candide.txt GPT demo that doubles as the end-to-end smoke test.
 
 ---
 
@@ -17,37 +15,44 @@ This repo is a **library**. It is consumed by sibling repos checked out next to 
 ```text
 otto-von-grad/
   include/ovg/                      — public headers (PUBLIC include dir; consumers #include these by bare name)
+    [core]
     tg_tensor.h                     — Tensor struct, lifecycle, print helpers, tg_numel, TG_DATAF
     tg_ops.h                        — all differentiable ops
     tg_train.h                      — tg_backward, tg_sgd_step, tg_adam_step, grad clipping
-    tg_mlp.h                        — TgLinear convenience layer
-    tg_attention.h                  — TgSelfAttention
-    tg_block.h                      — TgBlock (pre-norm transformer block)
-    tg_transformer.h                — TgTransformer (stack of blocks)
-    tg_gpt.h                        — TgGPT, TgGPTConfig
-    tg_tokenizer.h                  — TgVocab, tg_read_file, tg_vocab_build/encode/decode, tg_tokenize
-    tg_sample.h                     — tg_sample_argmax, tg_sample_topk, tg_generate
     tg_checkpoint.h                 — tg_checkpoint_save / tg_checkpoint_load (binary format v2)
     tg_cuda.h                       — CUDA tensor lifecycle (tg_to_cuda, tg_from_cuda)
     tg_rng.h                        — RNG state and seeding (tg_seed, tg_seed_from_entropy)
     ovg_error.h                     — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
+    [nn]
+    tg_mlp.h                        — TgLinear convenience layer
+    tg_attention.h                  — TgSelfAttention
+    tg_block.h                      — TgBlock (pre-norm transformer block)
+    tg_transformer.h                — TgTransformer (stack of blocks)
+    [lm]
+    tg_gpt.h                        — TgGPT, TgGPTConfig
+    tg_tokenizer.h                  — TgVocab, tg_read_file, tg_vocab_build/encode/decode, tg_tokenize
+    tg_sample.h                     — tg_sample_argmax, tg_sample_topk, tg_generate
   src/                              — implementation (PRIVATE include dir)
+    [core → ovg_core]
     tg_tensor.c                     — Tensor lifecycle, fill helpers, print
     tg_ops.c                        — every op's forward + paired _backward function
     tg_train.c                      — topo sort, backward, optimizers
-    tg_mlp.c                        — TgLinear
-    tg_attention.c                  — batched multi-head attention forward
-    tg_block.c                      — TgBlock forward
-    tg_transformer.c                — TgTransformer forward + stochastic-depth schedule
-    tg_gpt.c                        — embeddings + transformer + output projection
-    tg_tokenizer.c                  — character-level byte vocabulary
-    tg_sample.c                     — sampling + generation loop
     tg_checkpoint.c                 — binary checkpoint I/O
     tg_rng.c                        — xorshift32 + seeding
     ovg_error.c                     — ovg_fatal + handler hook
     tg_cuda.cu                      — CUDA tensor upload/sync/alloc
     cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops + cuBLAS dispatch (internal only, not exported)
-    main.c                          — GPT training demo (candide.txt); saves/resumes checkpoints
+    [nn → ovg_nn]
+    tg_mlp.c                        — TgLinear
+    tg_attention.c                  — batched multi-head attention forward
+    tg_block.c                      — TgBlock forward
+    tg_transformer.c                — TgTransformer forward + stochastic-depth schedule
+    [lm → ovg_lm]
+    tg_gpt.c                        — embeddings + transformer + output projection
+    tg_tokenizer.c                  — character-level byte vocabulary
+    tg_sample.c                     — sampling + generation loop
+    [app]
+    main.c                          — GPT training demo (candide.txt); saves/resumes checkpoints; links ovg_lm
   tests/
     ovg_test.h                      — minimal test assertion macros
     test_ops.c                      — ops forward + backward correctness, BF16, N-D matmul
@@ -67,6 +72,33 @@ otto-von-grad/
     checkpoints/
       model.bin                     — saved after each training run (gitignored)
 ```
+
+---
+
+## Library Layers
+
+The library is three static targets with dependencies pointing strictly downward. Nothing in a lower
+layer may include a header from a higher one.
+
+| Target | Contents | Links |
+|---|---|---|
+| `ovg_core` | tensor, autograd ops, backward/optimizers, RNG, checkpoint I/O, error handler, CUDA kernels | (CUDA runtime/cuBLAS when `OVG_CUDA=ON`) |
+| `ovg_nn`   | model-agnostic building blocks: `TgLinear`, `TgSelfAttention`, `TgBlock`, `TgTransformer` | `ovg_core` |
+| `ovg_lm`   | language-model toolkit: `TgGPT`, `TgVocab`/tokenizer, sampling/generation | `ovg_nn` |
+| `ottovongrad` | INTERFACE umbrella = everything above | `ovg_lm` |
+
+Consumers link the narrowest target that has what they need: a vision model links `ovg_nn`, a GPT
+links `ovg_lm`, `ottovongrad` is the everything-included default. The intent is for `ovg_lm` to be
+packaged on its own eventually; keep it free of anything a non-LM consumer would need, and keep
+`ovg_core`/`ovg_nn` free of anything that assumes tokens or text.
+
+Placing new code:
+
+* Operates on `Tensor` with no notion of a model → `ovg_core` (`tg_ops.c` for a differentiable op).
+* A reusable layer or block that any architecture could use → `ovg_nn`.
+* Assumes a vocabulary, token ids, sequences of text, or a GPT → `ovg_lm`.
+* If a lower layer needs something from a higher one, the thing is in the wrong layer — move it
+  down rather than adding the include.
 
 ---
 
@@ -354,7 +386,7 @@ cmake --build --preset default
 .\build\otto_von_grad_tests.exe    # expect "73 passed, 0 failed"
 ```
 
-Docs-only changes are exempt. For CUDA-specific changes, the default (CUDA) preset is the one that matters — the CPU preset will not exercise the kernels. Tests guarded by `#ifdef OVG_CUDA_ENABLED` are skipped in CPU-only builds.
+Docs-only changes are exempt. After a CMake change, also confirm each layer still builds on its own (`cmake --build --preset default --target ovg_core`, then `ovg_nn`, then `ovg_lm`) and that `../lambda` configures and builds with no edits to its own CMakeLists. For CUDA-specific changes, the default (CUDA) preset is the one that matters — the CPU preset will not exercise the kernels. Tests guarded by `#ifdef OVG_CUDA_ENABLED` are skipped in CPU-only builds.
 
 ---
 
@@ -428,6 +460,7 @@ Working style:
 * Keep changes narrow and easy to review. Avoid unrelated refactors, formatting churn, or metadata updates.
 * Preserve user work in the git tree. If unrelated files are dirty, leave them alone.
 * New public functions need a prototype in the matching header. Include the narrowest header that provides what you need (see Include Style).
+* New source files go in the lowest layer that has everything they need (see Library Layers), and get added to that layer's source list in `CMakeLists.txt`.
 
 When modifying code:
 
