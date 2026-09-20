@@ -1,6 +1,6 @@
 # Spec: Platform Phase 1 — Training Harness
 
-> **Status:** Draft for implementation. Derived from `docs/FOUNDATION_PLATFORM.md` (Training Harness decision, closed 2026-09-20). `AGENTS.md` describes what exists today; this document describes exactly what Phase 1 adds, and is complete when every item in [Acceptance](#acceptance) is checked.
+> **Status:** Implemented 2026-09-20 (library at `55f3472`, candide `e9132a9`, lambda `4c09cb4`, vexilloscope `ad6a75c`); every Acceptance item is checked. Derived from `docs/FOUNDATION_PLATFORM.md` (Training Harness decision, closed 2026-09-20). `AGENTS.md` describes what exists today; this document describes exactly what Phase 1 adds, and is complete when every item in [Acceptance](#acceptance) is checked.
 
 ---
 
@@ -394,11 +394,11 @@ New file `tests/test_optim.c` (registered in `test_main.c`), additions to `tests
 
 ## Acceptance
 
-- [ ] `tg_optim.h`, `tg_sched.h`, RNG state accessors, eval guard, CUDA float helpers implemented as specified.
-- [ ] Checkpoint v3 writer/readers implemented; v2 files load; the three pre-existing checkpoint tests pass unchanged.
-- [ ] `cmake --build --preset default` clean; `otto_von_grad_tests.exe` reports all pass at the new count; `cmake --preset cpu` build passes its count.
-- [ ] `ovg_core`, `ovg_nn`, `ovg_lm` each build standalone.
-- [ ] `examples/candide.c` migrated with periodic saves; a run stopped by Ctrl-C mid-way and restarted reports the cumulative `opt.step` of the last save and continues from it.
-- [ ] `../lambda` migrated and builds with no CMake edits; with no phase-2 checkpoint present, phase 2 warm-starts from phase 1 with `step == 0`; re-running a completed phase prints the complete notice and does not rewrite its checkpoint.
-- [ ] `../vexilloscope` migrated (harness only) and builds; `main.c` line count reduced; schedule values unchanged.
-- [ ] `AGENTS.md` updated as listed; `FOUNDATION_PLATFORM.md` claims table and baseline updated.
+- [x] `tg_optim.h`, `tg_sched.h`, RNG state accessors, eval guard, CUDA float helpers implemented as specified.
+- [x] Checkpoint v3 writer/readers implemented; v2 files load; the three pre-existing checkpoint tests pass unchanged.
+- [x] `cmake --build --preset default` clean; `otto_von_grad_tests.exe` reports all pass at the new count; `cmake --preset cpu` build passes its count.
+- [x] `ovg_core`, `ovg_nn`, `ovg_lm` each build standalone.
+- [x] `examples/candide.c` migrated with periodic saves; a run stopped by Ctrl-C mid-way and restarted reports the cumulative `opt.step` of the last save and continues from it.
+- [x] `../lambda` migrated and builds with no CMake edits; with no phase-2 checkpoint present, phase 2 warm-starts from phase 1 with `step == 0`; re-running a completed phase prints the complete notice and does not rewrite its checkpoint.
+- [x] `../vexilloscope` migrated (harness only) and builds; `main.c` line count reduced; schedule values unchanged.
+- [x] `AGENTS.md` updated as listed; `FOUNDATION_PLATFORM.md` claims table and baseline updated.

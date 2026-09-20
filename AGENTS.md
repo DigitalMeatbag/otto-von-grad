@@ -18,10 +18,12 @@ otto-von-grad/
     [core]
     tg_tensor.h                     — Tensor struct, lifecycle, print helpers, tg_numel, TG_DATAF
     tg_ops.h                        — all differentiable ops
-    tg_train.h                      — tg_backward, tg_sgd_step, tg_adam_step, grad clipping
-    tg_checkpoint.h                 — tg_checkpoint_save / tg_checkpoint_load (binary format v2)
+    tg_train.h                      — tg_backward, tg_sgd_step, tg_adam_step, grad clipping, eval guard (tg_eval_begin/end, TgMeter)
+    tg_optim.h                      — TgAdam: optimizer state + zero_grads / accumulate / update
+    tg_sched.h                      — tg_lr_warmup_cosine / tg_lr_warmup_linear (pure functions of step)
+    tg_checkpoint.h                 — weights-only save/load, tg_checkpoint_info / save_run / load_run (binary format v3; reads v2)
     tg_cuda.h                       — CUDA tensor lifecycle (tg_to_cuda, tg_from_cuda)
-    tg_rng.h                        — RNG state and seeding (tg_seed, tg_seed_from_entropy)
+    tg_rng.h                        — RNG state and seeding (tg_seed, tg_seed_from_entropy, tg_rng_get_state / set_state)
     ovg_error.h                     — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
     [nn]
     tg_mlp.h                        — TgLinear convenience layer
@@ -36,12 +38,14 @@ otto-von-grad/
     [core → ovg_core]
     tg_tensor.c                     — Tensor lifecycle, fill helpers, print
     tg_ops.c                        — every op's forward + paired _backward function
-    tg_train.c                      — topo sort, backward, optimizers
-    tg_checkpoint.c                 — binary checkpoint I/O
+    tg_train.c                      — topo sort, backward, optimizers, eval guard
+    tg_optim.c                      — TgAdam over the raw tg_adam_step / tg_adam_step_gpu
+    tg_sched.c                      — learning-rate schedules
+    tg_checkpoint.c                 — binary checkpoint I/O (v3 writer; v2 + v3 readers)
     tg_rng.c                        — xorshift32 + seeding
     ovg_error.c                     — ovg_fatal + handler hook
     tg_cuda.cu                      — CUDA tensor upload/sync/alloc
-    tg_cuda_internal.h              — device plumbing for ops/train (tg_cuda_alloc, cache buffers, grad zeroing); private
+    tg_cuda_internal.h              — device plumbing for ops/train/optim/checkpoint (tg_cuda_alloc, cache buffers, grad zeroing, raw float buffers); private
     cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops + cuBLAS dispatch (internal only, not exported)
     [nn → ovg_nn]
     tg_mlp.c                        — TgLinear
@@ -62,10 +66,11 @@ otto-von-grad/
     ovg_test.h                      — minimal test assertion macros
     test_ops.c                      — ops forward + backward correctness, BF16, N-D matmul
     test_train.c                    — backward pass, grad accumulation, optimizer step
+    test_optim.c                    — TgAdam parity/reset/accumulate/step counter, schedules, eval guard, RNG state
     test_attention.c                — causal + encoder attention, batch parity
     test_gpt.c                      — GPT forward shape (batch=1 and batch=2), param collection
     test_tokenizer.c                — vocab build, encode/decode round-trip, tokenize
-    test_checkpoint.c               — save/load round-trip, bad magic, count mismatch
+    test_checkpoint.c               — weights-only round-trip, bad magic, count mismatch; v3 run-state round-trip, info, v2 compat, load modes, exact resume, .tmp replacement
     test_sample.c                   — argmax, top-k determinism, index bounds
     test_main.c                     — test runner entry point
 ```
@@ -79,7 +84,7 @@ layer may include a header from a higher one.
 
 | Target | Contents | Links |
 |---|---|---|
-| `ovg_core` | tensor, autograd ops, backward/optimizers, RNG, checkpoint I/O, error handler, CUDA kernels | (CUDA runtime/cuBLAS when `OVG_CUDA=ON`) |
+| `ovg_core` | tensor, autograd ops, backward/optimizers, `TgAdam`, LR schedules, eval guard, RNG, checkpoint I/O, error handler, CUDA kernels | (CUDA runtime/cuBLAS when `OVG_CUDA=ON`) |
 | `ovg_nn`   | model-agnostic building blocks: `TgLinear`, `TgSelfAttention`, `TgBlock`, `TgTransformer` | `ovg_core` |
 | `ovg_lm`   | language-model toolkit: `TgGPT`, `TgVocab`/tokenizer, sampling/generation | `ovg_nn` |
 | `ottovongrad` | INTERFACE umbrella = everything above | `ovg_lm` |
@@ -209,6 +214,60 @@ void  tg_free_graph(Tensor *root);
 float tg_clip_grad_norm(Tensor **params, int n, float max_norm, float eps);
 // CUDA path: clips on device, returns 0.0f
 ```
+
+### TgAdam (`tg_optim.h`)
+
+The struct path wraps the raw `tg_adam_step` / `tg_adam_step_gpu` above (which remain public) and
+is numerically identical to them. Moments follow the params: host buffers, or device buffers when
+the params are on CUDA. **Create `TgAdam` after moving params to their device.**
+
+```c
+typedef struct {
+    Tensor **params;     /* borrowed */
+    int      n_params;
+    float  **m, **v;     /* per-param moments; host or device buffers */
+    int      on_cuda;    /* fixed at create */
+    int      step;       /* completed updates; 0 after create/reset */
+    float    beta1, beta2, eps;
+} TgAdam;
+
+TgAdam tg_adam_create(Tensor **params, int n_params, float beta1, float beta2, float eps);
+       // fatal if n_params <= 0 or params mix CPU and CUDA
+void   tg_adam_free(TgAdam *opt);       // frees m/v; does not touch params
+void   tg_adam_reset(TgAdam *opt);      // zeroes m/v, step = 0
+
+void   tg_adam_zero_grads(TgAdam *opt);                          // tg_zero_grads over params
+void   tg_adam_accumulate(TgAdam *opt, Tensor *loss, int n_micro); // scale by 1/n_micro if > 1, backward_accum, free_graph
+float  tg_adam_update(TgAdam *opt, float lr, float max_grad_norm);
+       // step += 1; clips first if max_grad_norm > 0; returns the pre-clip norm on CPU, 0.0f on CUDA / no clip
+```
+
+A step is `tg_adam_zero_grads` → one `tg_adam_accumulate` per micro-step → `tg_adam_update`.
+`tg_adam_accumulate` **frees the loss graph**: read the loss value (`tg_scalar_value`) before
+calling it, and do not call `tg_free_graph(loss)` afterwards (that is a use-after-free).
+
+### Eval guard (`tg_train.h`)
+
+```c
+int  tg_eval_begin(void);           // tg_training = 0; returns the previous value
+void tg_eval_end(int prev_training);
+typedef struct { double sum; int n; } TgMeter;   // running mean: tg_meter_add / tg_meter_mean
+```
+
+### Learning-rate schedules (`tg_sched.h`)
+
+Pure functions of the 1-based step; `warmup_steps` may be 0, `total_steps > 0`. `warm` scales the
+whole value (floor included); `progress = clamp((step - 1) / total_steps, 0, 1)`.
+
+```c
+float tg_lr_warmup_cosine(int step, int total_steps, int warmup_steps, float base, float floor_lr);
+      // (floor + (base - floor) * 0.5 * (1 + cos(pi * progress))) * warm
+float tg_lr_warmup_linear(int step, int total_steps, int warmup_steps, float base, float floor_lr);
+      // (base + (floor - base) * progress) * warm
+```
+
+The harness does not own the schedule: the caller computes `lr` and passes it to `tg_adam_update`.
+A constant LR needs no function.
 
 ---
 
@@ -340,12 +399,52 @@ void tg_generate(TgGPT *g, const TgVocab *v,
 
 ## Checkpoints
 
-Binary format v2 (little-endian):
-- `uint32` magic = `0x00475632`
-- `int32` n (param count)
-- Per param: `int32 ndim`, `int32 shape[TG_MAX_DIMS]`, then `numel` floats
+Binary format v3 (little-endian, fixed-width). Config precedes the params so a model can be built
+from the file before any tensor exists; the optimizer section follows the params so the
+weights-only reader can stop early.
 
-Validates magic, count, and per-tensor shapes on load. Incompatible with v1 checkpoints (magic `0x00475643`).
+```text
+uint32   magic        = 0x00475633   (TG_CHECKPOINT_MAGIC_V3)
+uint32   flags        bit 0: optimizer section present; all other bits must be 0
+int32    step         completed updates at save (0 for weights-only)
+uint32   rng_state    xorshift32 word at save when flags bit 0 is set; 0 otherwise
+int32    config_len   >= 0
+uint8    config[config_len]
+int32    n_params
+per param: int32 ndim, int32 shape[TG_MAX_DIMS], float data[numel]
+if flags & 1:
+  int32  optimizer_kind = 1 (Adam); float beta1, beta2, eps
+  per param: float m[numel], float v[numel]
+```
+
+```c
+int tg_checkpoint_save(const char *path, Tensor **params, int n);   // weights-only: v3, flags = 0
+int tg_checkpoint_load(const char *path, Tensor **params, int n);   // reads v2 or v3; params only
+
+int tg_checkpoint_info(const char *path, TgCheckpointInfo *info, void *config_out, int config_cap);
+    // header only; copies min(config_len, config_cap) config bytes; -1 on error / missing file
+int tg_checkpoint_save_run(const char *path, const TgAdam *opt, const void *config, int config_len);
+    // params + m/v/step/betas/eps + current RNG state + config; device buffers synced by the call
+int tg_checkpoint_load_run(const char *path, TgAdam *opt, TgLoadMode mode, TgCheckpointInfo *info);
+    // TG_LOAD_RESUME (default): restores params, moments, step, RNG state
+    // TG_LOAD_INIT_FROM_WEIGHTS: params only; tg_adam_reset(opt); RNG untouched
+```
+
+Rules:
+
+- Both writers write `<path>.tmp` then replace `<path>`, so a kill mid-save keeps the previous file.
+- All readers validate magic ∈ {v2, v3}, unknown flag bits, `config_len`, and short reads; the
+  loaders also validate `n_params` and per-param `ndim`/shape. `load_run` on RESUME additionally
+  rejects a wrong `optimizer_kind`, betas/eps that differ from the target `TgAdam` (exact float
+  compare — change hyperparameters via `INIT_FROM_WEIGHTS`), and `rng_state == 0`.
+- **v2 compatibility** (magic `0x00475632`: `uint32 magic, int32 n, params`): loads as weights-only.
+  `load_run(RESUME)` on a v2 file, or on a v3 file without an optimizer section, loads the params,
+  resets the optimizer to step 0, leaves the RNG untouched, and prints
+  `[ovg] checkpoint <path>: no optimizer state; moments zeroed, step reset to 0`.
+- v1 (magic `0x00475643`) is rejected.
+- `load_run` failure is not transactional: params `0..k-1` may be overwritten. Treat -1 as fatal.
+- `opt->params` must be the same tensors in the same order as at save; the file validates shapes,
+  not identity.
 
 ---
 
@@ -357,7 +456,7 @@ Enabled via `OVG_CUDA=ON`. When enabled:
 - cuBLAS handles matmul: `SgemmStridedBatched` (N-D F32), `cublasSgemm` (2D F32), `cublasGemmEx` (BF16 with `CUBLAS_COMPUTE_32F`)
 - `tg_to_cuda(t)` uploads F32 tensor to device; `tg_from_cuda(t)` syncs back
 - Public surface (`tg_cuda.h`): `tg_to_cuda`, `tg_from_cuda`, `tg_cuda_free`, `tg_cuda_malloc_floats` / `tg_cuda_free_floats` (device buffers for `tg_adam_step_gpu` moments)
-- Internal (`src/tg_cuda_internal.h`, used by `tg_ops.c` / `tg_train.c` only): `tg_cuda_alloc(t)` allocates device data+grad with dtype-aware element size (2 bytes for BF16, 4 for F32); `tg_cuda_alloc_cache` / `tg_cuda_upload_cache` for op scratch; `tg_cuda_zero_grad`, `tg_cuda_set_grad_scalar` for backward
+- Internal (`src/tg_cuda_internal.h`, used by `tg_ops.c` / `tg_train.c` / `tg_optim.c` / `tg_checkpoint.c` only): `tg_cuda_alloc(t)` allocates device data+grad with dtype-aware element size (2 bytes for BF16, 4 for F32); `tg_cuda_alloc_cache` / `tg_cuda_upload_cache` for op scratch; `tg_cuda_zero_grad`, `tg_cuda_set_grad_scalar` for backward; `tg_cuda_upload_floats` / `tg_cuda_download_floats` / `tg_cuda_zero_floats` for raw device float buffers (Adam moments)
 - Every op's forward and backward has a correct CPU path. BF16 tensors are CUDA-only (assert on CPU).
 
 ---
@@ -370,7 +469,7 @@ Default preset: VS2026, CUDA enabled, Release mode, all outputs flattened into `
 cmake --preset default             # configure (fresh clone, after deleting build/, or after CMakeLists changes)
 cmake --build --preset default     # every subsequent build
 .\build\candide.exe                # GPT demo (trains on examples/data/candide.txt); does not run tests
-.\build\otto_von_grad_tests.exe    # test suite — 80 tests, exits 0 on all-pass
+.\build\otto_von_grad_tests.exe    # test suite — 101 tests (89 in the cpu preset), exits 0 on all-pass
 ```
 
 Non-default presets:
@@ -386,7 +485,7 @@ After any code change, build and run the test binary before declaring the work d
 
 ```powershell
 cmake --build --preset default
-.\build\otto_von_grad_tests.exe    # expect "80 passed, 0 failed"
+.\build\otto_von_grad_tests.exe    # expect "101 passed, 0 failed" (cpu preset: "89 passed, 0 failed")
 ```
 
 Docs-only changes are exempt. After a CMake change, also confirm each layer still builds on its own (`cmake --build --preset default --target ovg_core`, then `ovg_nn`, then `ovg_lm`) and that `../lambda` configures and builds with no edits to its own CMakeLists. For CUDA-specific changes, the default (CUDA) preset is the one that matters — the CPU preset will not exercise the kernels. Tests guarded by `#ifdef OVG_CUDA_ENABLED` are skipped in CPU-only builds.
@@ -400,7 +499,13 @@ void     tg_seed(uint32_t seed);       // seed rand() + xorshift32, log seed to 
 void     tg_seed_from_entropy(void);   // seed from OS entropy, then call tg_seed()
 uint32_t tg_rng_xorshift32(void);      // raw xorshift32 (used internally by tg_dropout)
 float    tg_rng_uniform(void);         // uniform float in [0, 1)
+uint32_t tg_rng_get_state(void);       // the xorshift32 word (saved by tg_checkpoint_save_run)
+void     tg_rng_set_state(uint32_t s); // fatal if s == 0
 ```
+
+**Ordering contract.** `tg_seed()` / `tg_seed_from_entropy()` overwrite the xorshift word, so a
+resume (`tg_checkpoint_load_run`) must run **after** them or the seed clobbers the restored state.
+Only library randomness (dropout, drop-path, sampling) is restored; application-side `rand()` is not.
 
 ---
 
@@ -426,7 +531,8 @@ in-tree code and consumers include them by bare name:
 ```
 
 `src/` is `PRIVATE`. Two headers live there and are not part of the public surface: `cuda_ops.h`
-(kernel dispatch) and `tg_cuda_internal.h` (device plumbing for ops/train). A `.c` file that needs
+(kernel dispatch) and `tg_cuda_internal.h` (device plumbing for `tg_ops.c` / `tg_train.c` /
+`tg_optim.c` / `tg_checkpoint.c`). A `.c` file that needs
 both the public and internal CUDA functions includes `tg_cuda_internal.h`, which pulls in `tg_cuda.h`. A new public function gets its prototype in the matching
 `include/ovg/` header; a new internal helper stays in `src/`.
 
@@ -470,7 +576,8 @@ When modifying code:
 
 * Preserve explicit tensor math — do not hide operations behind abstractions.
 * Do not add broadcasting as a convenience fix. If a shape doesn't line up, make it explicit with `tg_reshape` / `tg_expand_dim` at the call site.
-* Do not manually free intermediate graph tensors after a training step; call `tg_free_graph(loss)` and let it handle every non-persistent node.
+* Do not manually free intermediate graph tensors after a training step; call `tg_free_graph(loss)` and let it handle every non-persistent node. Through `TgAdam`, `tg_adam_accumulate` already does this — a trailing `tg_free_graph(loss)` is a use-after-free.
+* Create `TgAdam` after moving params to their device; call `tg_seed` before `tg_checkpoint_load_run`.
 * If an op allocates auxiliary data for backward (`cache`), make ownership obvious and verify `tg_free_graph` cleans it up.
 * Preserve the backward function paired with each op in `tg_ops.c`.
 * Do not introduce external ML libraries.
@@ -479,4 +586,4 @@ When modifying code:
 * When adding a CUDA kernel, ensure the CPU path remains correct and the dispatch logic is symmetric.
 * `tg_block_forward` reshapes 2D `[T, C]` input to `[1, T, C]` at the start — the whole block operates in 3D. Attention output is `[B, T, C]` (3D), not `[B*T, C]`.
 * `tg_gpt_forward` returns `[B*T, V]` (2D), ready for cross-entropy.
-* The checkpoint magic is `0x00475632` (v2). The v1 magic `0x00475643` is rejected on load.
+* The checkpoint magic is `0x00475633` (v3). v2 (`0x00475632`) files load weights-only; the v1 magic `0x00475643` is rejected on load.

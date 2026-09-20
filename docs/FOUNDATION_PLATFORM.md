@@ -54,8 +54,8 @@ success metrics by themselves.
 |---|---|---|
 | Complete stack in a few thousand lines | ~7k lines including tests and CUDA kernels | Roughly doubles through Phase 3; re-count before quoting a number. |
 | Small, controlled dependency surface | CPU uses the C toolchain/runtime; acceleration adds the CUDA toolkit, runtime, driver, and cuBLAS | Keep dependencies explicit and bounded; do not describe this as "no supply chain." |
-| Every op has its gradient beside it | Enforced coding rule; 80 tests | — |
-| Exact resume from a v3 checkpoint | Decided (Phase 1); not yet built | Do not claim until Phase 1 ships; v2 files load weights only. |
+| Every op has its gradient beside it | Enforced coding rule; 101 tests | — |
+| Exact resume from a v3 checkpoint | Built (Phase 1, 2026-09-20): `tg_checkpoint_save_run` / `load_run` carry Adam moments, step, and the RNG word; `test_checkpoint_exact_resume` proves a stopped-and-resumed run matches an uninterrupted one bitwise on CPU | Library randomness only; application-side `rand()` is not restored. v2 files load weights only. |
 | Independently usable modality packages | `ovg_lm` exists; `ovg_vision` Phase 2; `ovg_diffusion` Phase 3b | One of three today. |
 | Proven by real applications | `lambda` (GPT) and `vexilloscope` (ViT) both build; vexilloscope needs a retrain | Image generation has no application yet. |
 | Trains on a single consumer GPU | RTX 4070 Super, 12 GB, is the reference machine | Yes for focused models; see below. |
@@ -120,6 +120,7 @@ State as of commit `5f83f16` (the range `93ff570`..`5f83f16`, merged to `master`
   - `lambda` builds against current OVG with no changes to its CMake.
   - `vexilloscope` was stuck on the v1 API since the v2 N-D migration (2026-05-28). Its port is committed in that repo (`ef4b230`): a mechanical pass (`->data` → `TG_DATAF`, `->rows/->cols` → `shape[]`, two-int `tg_new` → N-D form), `tg_concat_rows` → `tg_concat`, `tg_row_slice` → `tg_slice` + `tg_reshape` on the now-3D encoder output, `cuda_smoke.c` deleted. It compiles with zero warnings and links `ovg_nn` only. Its v1 weights file cannot load — v1 stored LayerNorm affine and FFN bias parameters pre-tiled to `[seq_len, C]`, v2 stores `[1, C]` — so a retrain is required and is the outstanding item.
 - **Includes remain bare.** The namespaced form (`#include "ovg/tg_ops.h"`, `include/ovg/lm/`) is deferred until a modality package is actually about to be published separately.
+- **Phase 1 (training harness, 2026-09-20, `docs/SPEC_PLATFORM_PHASE1_HARNESS.md`):** `ovg_core` gained `TgAdam` (`tg_optim.h`), `tg_lr_warmup_cosine` / `tg_lr_warmup_linear` (`tg_sched.h`), the eval guard and `TgMeter` (`tg_train.h`), `tg_rng_get_state` / `set_state`, and checkpoint format v3 (`tg_checkpoint_info` / `save_run` / `load_run` with `TG_LOAD_RESUME` / `TG_LOAD_INIT_FROM_WEIGHTS`; v2 files still load weights-only). Tests: 101 (CUDA) / 89 (CPU). All three consumers train through the harness: `candide` and `lambda` resume exactly from periodic `save_run` checkpoints (lambda skips a phase already at its step budget); vexilloscope's `main.c` shrank from 1,294 to 1,257 lines and keeps its own weight format until Phase 2.
 
 Known ceilings carried forward from `AGENTS.md`:
 
