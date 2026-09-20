@@ -9,7 +9,9 @@ void run_ops_tests(int *passed, int *failed);
 void run_train_tests(int *passed, int *failed);
 void run_optim_tests(int *passed, int *failed);
 void run_attention_tests(int *passed, int *failed);
+void run_linear_tests(int *passed, int *failed);
 void run_gpt_tests(int *passed, int *failed);
+void run_vision_tests(int *passed, int *failed);
 void run_tokenizer_tests(int *passed, int *failed);
 void run_checkpoint_tests(int *passed, int *failed);
 void run_sample_tests(int *passed, int *failed);
@@ -30,8 +32,14 @@ int main(void) {
     printf("=== attention ===\n");
     run_attention_tests(&passed, &failed);
 
+    printf("=== linear ===\n");
+    run_linear_tests(&passed, &failed);
+
     printf("=== gpt ===\n");
     run_gpt_tests(&passed, &failed);
+
+    printf("=== vision ===\n");
+    run_vision_tests(&passed, &failed);
 
     printf("=== tokenizer ===\n");
     run_tokenizer_tests(&passed, &failed);

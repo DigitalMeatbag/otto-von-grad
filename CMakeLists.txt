@@ -14,9 +14,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}")
 option(OVG_CUDA "Enable CUDA acceleration (requires CUDA Toolkit)" OFF)
 
 # ── Layered targets ──────────────────────────────────────────────────────────
-# Dependencies point strictly downward: lm → nn → core. A source file belongs
-# to the lowest layer that has everything it needs; nothing in core or nn may
-# include an lm header. `ottovongrad` is the umbrella consumers link today.
+# Dependencies point strictly downward: lm → nn → core and vision → nn → core.
+# A source file belongs to the lowest layer that has everything it needs;
+# nothing in core or nn may include an lm or vision header, and lm and vision
+# do not reach each other. `ottovongrad` is the umbrella consumers link today.
 
 set(OVG_CORE_SOURCES
     src/tg_tensor.c
@@ -30,7 +31,7 @@ set(OVG_CORE_SOURCES
 )
 
 set(OVG_NN_SOURCES
-    src/tg_mlp.c
+    src/tg_linear.c
     src/tg_attention.c
     src/tg_block.c
     src/tg_transformer.c
@@ -40,6 +41,11 @@ set(OVG_LM_SOURCES
     src/tg_gpt.c
     src/tg_tokenizer.c
     src/tg_sample.c
+)
+
+set(OVG_VISION_SOURCES
+    src/tg_patch_embed.c
+    src/tg_pool.c
 )
 
 if(OVG_CUDA)
@@ -85,9 +91,16 @@ if(NOT MSVC)
     target_compile_options(ovg_lm PRIVATE -O3 -march=native -ffast-math)
 endif()
 
+# vision: token-layout blocks for vision transformers (patch embedding, pooling)
+add_library(ovg_vision STATIC ${OVG_VISION_SOURCES})
+target_link_libraries(ovg_vision PUBLIC ovg_nn)
+if(NOT MSVC)
+    target_compile_options(ovg_vision PRIVATE -O3 -march=native -ffast-math)
+endif()
+
 # umbrella: everything, for consumers that link `ottovongrad`
 add_library(ottovongrad INTERFACE)
-target_link_libraries(ottovongrad INTERFACE ovg_lm)
+target_link_libraries(ottovongrad INTERFACE ovg_lm ovg_vision)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_executable(candide examples/candide.c)
@@ -101,12 +114,15 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         tests/test_train.c
         tests/test_optim.c
         tests/test_attention.c
+        tests/test_linear.c
         tests/test_gpt.c
+        tests/test_vision.c
         tests/test_tokenizer.c
         tests/test_checkpoint.c
         tests/test_sample.c
     )
-    target_link_libraries(otto_von_grad_tests PRIVATE ovg_lm)
+    # Links both packages; neither reaches the other (enforced by grep, not here).
+    target_link_libraries(otto_von_grad_tests PRIVATE ovg_lm ovg_vision)
     target_include_directories(otto_von_grad_tests PRIVATE tests/)
 
     enable_testing()

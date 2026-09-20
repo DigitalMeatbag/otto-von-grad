@@ -2,11 +2,11 @@
 
 # otto-von-grad
 
-A lightweight tensor autograd engine and neural-network toolkit written in C (C11), built as three layers: `ovg_core` (reverse-mode autodiff over N-D tensors up to 4D, optimizers, checkpoints, optional CUDA/cuBLAS), `ovg_nn` (linear, batched multi-head attention, transformer blocks), and `ovg_lm` (GPT-style language model, byte tokenizer, sampling). No external ML libraries. This file is the single source of truth for any coding agent working in this repo (`CLAUDE.md` imports it verbatim).
+A lightweight tensor autograd engine and neural-network toolkit written in C (C11), built as four layered targets: `ovg_core` (reverse-mode autodiff over N-D tensors up to 4D, optimizers, checkpoints, optional CUDA/cuBLAS), `ovg_nn` (linear, batched multi-head attention, transformer blocks), and two modality packages above it — `ovg_lm` (GPT-style language model, byte tokenizer, sampling) and `ovg_vision` (patch embedding, token pooling). No external ML libraries. This file is the single source of truth for any coding agent working in this repo (`CLAUDE.md` imports it verbatim).
 
 Optional CUDA acceleration via `OVG_CUDA=ON`.
 
-This repo is a **library**, built as three layered CMake targets (`ovg_core` → `ovg_nn` → `ovg_lm`, see [Library Layers](#library-layers)). It is consumed by sibling repos checked out next to it (`../vexilloscope`, a ViT classifier; `../lambda`, a lambda-calculus GPT curriculum) via `add_subdirectory(../otto-von-grad)` and `target_link_libraries(... ottovongrad)`. Application code, experiments, and corpora belong in those repos, not here. The only application here is `examples/candide.c`, the candide.txt GPT demo that doubles as the end-to-end smoke test.
+This repo is a **library**, built as four layered CMake targets (`ovg_core` → `ovg_nn` → `ovg_lm` and `ovg_nn` → `ovg_vision`, see [Library Layers](#library-layers)). It is consumed by sibling repos checked out next to it (`../vexilloscope`, a ViT classifier; `../lambda`, a lambda-calculus GPT curriculum) via `add_subdirectory(../otto-von-grad)` and `target_link_libraries(... ottovongrad)`. Application code, experiments, and corpora belong in those repos, not here. The only application here is `examples/candide.c`, the candide.txt GPT demo that doubles as the end-to-end smoke test.
 
 ---
 
@@ -26,7 +26,7 @@ otto-von-grad/
     tg_rng.h                        — RNG state and seeding (tg_seed, tg_seed_from_entropy, tg_rng_get_state / set_state)
     ovg_error.h                     — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
     [nn]
-    tg_mlp.h                        — TgLinear convenience layer
+    tg_linear.h                     — TgLinear (W [n_in, n_out], B [1, n_out] expanded at forward)
     tg_attention.h                  — TgSelfAttention
     tg_block.h                      — TgBlock (pre-norm transformer block)
     tg_transformer.h                — TgTransformer (stack of blocks)
@@ -34,6 +34,9 @@ otto-von-grad/
     tg_gpt.h                        — TgGPT, TgGPTConfig
     tg_tokenizer.h                  — TgVocab, tg_read_file, tg_vocab_build/encode/decode, tg_tokenize
     tg_sample.h                     — tg_sample_argmax, tg_sample_topk, tg_generate
+    [vision]
+    tg_patch_embed.h                — TgPatchEmbed (patch projection + positional embedding + optional CLS)
+    tg_pool.h                       — tg_pool_cls, tg_pool_mean_tokens ([B, T, C] → [B, C])
   src/                              — implementation (PRIVATE include dir)
     [core → ovg_core]
     tg_tensor.c                     — Tensor lifecycle, fill helpers, print
@@ -48,7 +51,7 @@ otto-von-grad/
     tg_cuda_internal.h              — device plumbing for ops/train/optim/checkpoint (tg_cuda_alloc, cache buffers, grad zeroing, raw float buffers); private
     cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops + cuBLAS dispatch (internal only, not exported)
     [nn → ovg_nn]
-    tg_mlp.c                        — TgLinear
+    tg_linear.c                     — TgLinear
     tg_attention.c                  — batched multi-head attention forward
     tg_block.c                      — TgBlock forward
     tg_transformer.c                — TgTransformer forward + stochastic-depth schedule
@@ -56,6 +59,9 @@ otto-von-grad/
     tg_gpt.c                        — embeddings + transformer + output projection
     tg_tokenizer.c                  — character-level byte vocabulary
     tg_sample.c                     — sampling + generation loop
+    [vision → ovg_vision]
+    tg_patch_embed.c                — TgPatchEmbed forward (2D or 3D patches → [B, n_tokens, C]) + collect_params
+    tg_pool.c                       — token pooling compositions over existing ops
   examples/
     candide.c                       — GPT training demo; links ovg_lm; saves/resumes checkpoints; builds as `candide`
     data/candide.txt                — corpus for the demo
@@ -68,7 +74,9 @@ otto-von-grad/
     test_train.c                    — backward pass, grad accumulation, optimizer step
     test_optim.c                    — TgAdam parity/reset/accumulate/step counter, schedules, eval guard, RNG state
     test_attention.c                — causal + encoder attention, batch parity
+    test_linear.c                   — TgLinear 2D/3D forward vs hand loop, backward, params, fatal paths, CUDA parity
     test_gpt.c                      — GPT forward shape (batch=1 and batch=2), param collection
+    test_vision.c                   — TgPatchEmbed shapes/values/backward/collect, pooling, ViT recipe end-to-end, CUDA parity
     test_tokenizer.c                — vocab build, encode/decode round-trip, tokenize
     test_checkpoint.c               — weights-only round-trip, bad magic, count mismatch; v3 run-state round-trip, info, v2 compat, load modes, exact resume, .tmp replacement
     test_sample.c                   — argmax, top-k determinism, index bounds
@@ -79,20 +87,23 @@ otto-von-grad/
 
 ## Library Layers
 
-The library is three static targets with dependencies pointing strictly downward. Nothing in a lower
-layer may include a header from a higher one.
+The library is four static targets with dependencies pointing strictly downward. Nothing in a lower
+layer may include a header from a higher one, and the two modality packages (`ovg_lm`, `ovg_vision`)
+do not include each other.
 
 | Target | Contents | Links |
 |---|---|---|
 | `ovg_core` | tensor, autograd ops, backward/optimizers, `TgAdam`, LR schedules, eval guard, RNG, checkpoint I/O, error handler, CUDA kernels | (CUDA runtime/cuBLAS when `OVG_CUDA=ON`) |
 | `ovg_nn`   | model-agnostic building blocks: `TgLinear`, `TgSelfAttention`, `TgBlock`, `TgTransformer` | `ovg_core` |
 | `ovg_lm`   | language-model toolkit: `TgGPT`, `TgVocab`/tokenizer, sampling/generation | `ovg_nn` |
-| `ottovongrad` | INTERFACE umbrella = everything above | `ovg_lm` |
+| `ovg_vision` | token-layout blocks for vision transformers: `TgPatchEmbed`, `tg_pool_cls`, `tg_pool_mean_tokens` | `ovg_nn` |
+| `ottovongrad` | INTERFACE umbrella = everything above | `ovg_lm`, `ovg_vision` |
 
-Consumers link the narrowest target that has what they need: a vision model links `ovg_nn`, a GPT
-links `ovg_lm`, `ottovongrad` is the everything-included default. The intent is for `ovg_lm` to be
-packaged on its own eventually; keep it free of anything a non-LM consumer would need, and keep
-`ovg_core`/`ovg_nn` free of anything that assumes tokens or text.
+Consumers link the narrowest target that has what they need: a ViT links `ovg_vision`, a GPT
+links `ovg_lm`, a model that only needs the generic blocks links `ovg_nn`, and `ottovongrad` is the
+everything-included default. The intent is for each modality package to be packaged on its own
+eventually; keep each free of anything a consumer of the other would need, and keep
+`ovg_core`/`ovg_nn` free of anything that assumes tokens, text, or patches.
 
 The target layering, the open design questions, and the phased plan for getting there are in
 `docs/FOUNDATION_PLATFORM.md`. This file describes what exists; that one describes where it is going.
@@ -102,6 +113,7 @@ Placing new code:
 * Operates on `Tensor` with no notion of a model → `ovg_core` (`tg_ops.c` for a differentiable op).
 * A reusable layer or block that any architecture could use → `ovg_nn`.
 * Assumes a vocabulary, token ids, sequences of text, or a GPT → `ovg_lm`.
+* Assumes a token layout that only vision models produce (patch embedding, token pooling) → `ovg_vision`.
 * If a lower layer needs something from a higher one, the thing is in the wrong layer — move it
   down rather than adding the include.
 
@@ -271,6 +283,33 @@ A constant LR needs no function.
 
 ---
 
+## Linear Layer
+
+File: `src/tg_linear.c` / `include/ovg/tg_linear.h` (`ovg_nn`)
+
+```c
+typedef struct {
+    Tensor *W;       /* [n_in, n_out] */
+    Tensor *B;       /* [1, n_out]; expanded to the input's leading dims at forward */
+    int n_in, n_out;
+} TgLinear;
+
+TgLinear  tg_linear_create(int n_in, int n_out, float w_scale);  // W ~ randn * w_scale, B = 0; fatal if n_in or n_out <= 0
+void      tg_linear_free(TgLinear *l);
+Tensor   *tg_linear_forward(TgLinear *l, Tensor *x);             // x: [..., n_in], ndim 2..4 → [..., n_out]; F32 only
+Tensor  **tg_linear_params(TgLinear *l, int *n_out);             // malloc'd {W, B}; *n_out = 2; caller frees the array
+```
+
+Forward is `tg_matmul(x, W)` followed by an explicit bias expansion: for 3D/4D input `B` is
+`tg_reshape`d to `[1, …, 1, n_out]` (skipped for 2D, where it already is), then `tg_expand_dim`ed
+over each leading axis to `xw`'s shape, then `tg_add`. No broadcasting. The intermediate `x @ W`
+and the expanded bias are ordinary graph nodes that `tg_free_graph` frees — there is no
+out-parameter exposing them, so a caller that keeps intermediates must free the graph from the
+output, not tensor-by-tensor. `TgGPT`'s output projection and `TgBlock`'s FFN keep their inline
+matmul + expansion; they do not use `TgLinear`.
+
+---
+
 ## Attention Module
 
 File: `src/tg_attention.c` / `include/ovg/tg_attention.h`
@@ -397,6 +436,72 @@ void tg_generate(TgGPT *g, const TgVocab *v,
 
 ---
 
+## Vision Package
+
+Files: `src/tg_patch_embed.c` / `include/ovg/tg_patch_embed.h`, `src/tg_pool.c` / `include/ovg/tg_pool.h` (`ovg_vision`)
+
+The package holds the two things a vision transformer needs above `ovg_nn`. Its modules take
+tokens (rows of `patch_size` floats), never pixels: patch extraction, letterboxing, and augmentation
+stay application-side.
+
+```c
+typedef struct {
+    Tensor *Cls;      /* [1, C]; NULL when use_cls == 0 */
+    Tensor *Proj;     /* [patch_size, C]; no bias (a shared bias is representable by PosEmb) */
+    Tensor *PosEmb;   /* [n_patches, C]; applied to patch tokens only */
+    int n_patches, patch_size, embed_dim, use_cls;
+} TgPatchEmbed;
+
+TgPatchEmbed tg_patch_embed_create(int n_patches, int patch_size, int embed_dim, int use_cls);
+             // Cls/Proj Xavier-uniform, PosEmb zeros, all persistent; fatal on non-positive dims or use_cls not 0/1
+void         tg_patch_embed_free(TgPatchEmbed *p);
+Tensor      *tg_patch_embed_forward(TgPatchEmbed *p, Tensor *patches);
+             // [n_patches, patch_size] (batch 1) or [B, n_patches, patch_size] → ALWAYS 3D [B, n_patches + use_cls, C]
+int          tg_patch_embed_collect_params(TgPatchEmbed *p, Tensor **params, int max_params);
+             // order Cls (if use_cls), Proj, PosEmb → 3 or 2; fatal if max_params is too small. This order is the checkpoint contract.
+static inline int tg_patch_embed_n_tokens(const TgPatchEmbed *p);   // n_patches + use_cls
+
+Tensor *tg_pool_cls(Tensor *enc);          // [B, T, C] → token 0 → [B, C]; 3D only (fatal otherwise)
+Tensor *tg_pool_mean_tokens(Tensor *enc);  // [B, T, C] → mean over T → [B, C]; 3D only; CLS included if present
+```
+
+Forward: `X = patches @ Proj` (3D @ 2D broadcast) `+ expand_dim(reshape(PosEmb, [1, n_patches, C]), 0, B)`;
+the positional embedding is added **before** the CLS prepend, so the CLS token gets none; then, if
+`use_cls`, `X = tg_concat(expand_dim(reshape(Cls, [1, 1, C]), 0, B), X, axis 1)` — CLS is token 0.
+Output is always 3D, matching `tg_block_forward`'s promotion; the encoder receives 3D and the
+pooling helpers take 3D.
+
+Both pools are compositions of existing ops (no new op, no constant tensor, every node has a CPU
+path, a CUDA path, and a paired backward):
+
+```text
+tg_pool_cls:          slice(enc, axis 1, 0, 1)  [B, 1, C]  → reshape [B, C]
+tg_pool_mean_tokens:  transpose(enc, 0, 1)      [T, B, C]  → reshape [T, B*C] → tg_mean_rows [1, B*C] → reshape [B, C]
+```
+
+The mean composition costs two extra full-size copies per forward (the transpose and the reshape),
+mirrored in backward; accepted. `tg_pool_cls` cannot check that the model was built with
+`use_cls = 1` — on a CLS-less model it silently returns the first patch token.
+
+The ViT recipe against this package (the assembly stays in the application; there is no `TgViT`):
+
+```c
+TgPatchEmbed  pe   = tg_patch_embed_create(n_patches, patch_size, C, /*use_cls=*/1);
+TgTransformer enc  = tg_transformer_create_encoder(n_blocks, C, hidden, n_patches + 1, n_heads, drop_path);
+Tensor       *Wout = /* [C, n_labels], Xavier, persistent */;
+
+Tensor *X      = tg_patch_embed_forward(&pe, patches);   /* [B, n_patches+1, C]; patches 2D or 3D */
+Tensor *H      = tg_transformer_forward(&enc, X);         /* [B, n_patches+1, C] */
+Tensor *pooled = tg_pool_cls(H);                          /* [B, C]  (requires use_cls = 1) */
+Tensor *logits = tg_matmul(pooled, Wout);                 /* [B, n_labels] — 2D, ready for CE */
+```
+
+Parameter collection: `tg_patch_embed_collect_params` (3), then the 12 per block (`gamma1, beta1,
+Wq, Wk, Wv, Wo, gamma2, beta2, W1, B1, W2, B2`), then `Wout`. There is no
+`tg_transformer_collect_params`.
+
+---
+
 ## Checkpoints
 
 Binary format v3 (little-endian, fixed-width). Config precedes the params so a model can be built
@@ -469,7 +574,7 @@ Default preset: VS2026, CUDA enabled, Release mode, all outputs flattened into `
 cmake --preset default             # configure (fresh clone, after deleting build/, or after CMakeLists changes)
 cmake --build --preset default     # every subsequent build
 .\build\candide.exe                # GPT demo (trains on examples/data/candide.txt); does not run tests
-.\build\otto_von_grad_tests.exe    # test suite — 101 tests (89 in the cpu preset), exits 0 on all-pass
+.\build\otto_von_grad_tests.exe    # test suite — 120 tests (105 in the cpu preset), exits 0 on all-pass
 ```
 
 Non-default presets:
@@ -485,10 +590,10 @@ After any code change, build and run the test binary before declaring the work d
 
 ```powershell
 cmake --build --preset default
-.\build\otto_von_grad_tests.exe    # expect "101 passed, 0 failed" (cpu preset: "89 passed, 0 failed")
+.\build\otto_von_grad_tests.exe    # expect "120 passed, 0 failed" (cpu preset: "105 passed, 0 failed")
 ```
 
-Docs-only changes are exempt. After a CMake change, also confirm each layer still builds on its own (`cmake --build --preset default --target ovg_core`, then `ovg_nn`, then `ovg_lm`) and that `../lambda` configures and builds with no edits to its own CMakeLists. For CUDA-specific changes, the default (CUDA) preset is the one that matters — the CPU preset will not exercise the kernels. Tests guarded by `#ifdef OVG_CUDA_ENABLED` are skipped in CPU-only builds.
+Docs-only changes are exempt. After a CMake change, also confirm each layer still builds on its own (`cmake --build --preset default --target ovg_core`, then `ovg_nn`, `ovg_lm`, `ovg_vision`) and that `../lambda` configures and builds with no edits to its own CMakeLists. The test binary links `ovg_lm` and `ovg_vision`, so it cannot detect a layer violation in either direction; the per-target builds and a grep for cross-package includes are the check. For CUDA-specific changes, the default (CUDA) preset is the one that matters — the CPU preset will not exercise the kernels. Tests guarded by `#ifdef OVG_CUDA_ENABLED` are skipped in CPU-only builds.
 
 ---
 
@@ -586,4 +691,5 @@ When modifying code:
 * When adding a CUDA kernel, ensure the CPU path remains correct and the dispatch logic is symmetric.
 * `tg_block_forward` reshapes 2D `[T, C]` input to `[1, T, C]` at the start — the whole block operates in 3D. Attention output is `[B, T, C]` (3D), not `[B*T, C]`.
 * `tg_gpt_forward` returns `[B*T, V]` (2D), ready for cross-entropy.
+* `tg_patch_embed_forward` always returns 3D; the pooling helpers take 3D only; `tg_pool_cls` assumes `use_cls = 1` — the library cannot check it.
 * The checkpoint magic is `0x00475633` (v3). v2 (`0x00475632`) files load weights-only; the v1 magic `0x00475643` is rejected on load.
