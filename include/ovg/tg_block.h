@@ -1,7 +1,7 @@
 #ifndef TG_BLOCK_H
 #define TG_BLOCK_H
 
-#include "attention.h"
+#include "tg_attention.h"
 
 typedef struct {
     TgSelfAttention attn;

@@ -1,7 +1,7 @@
 #include "ovg_test.h"
 #include "tg_ops.h"
 #include "tg_train.h"
-#include "attention.h"
+#include "tg_attention.h"
 
 #include <math.h>
 #include <string.h>

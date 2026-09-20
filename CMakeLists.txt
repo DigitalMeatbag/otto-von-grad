@@ -19,7 +19,7 @@ set(OVG_SOURCES
     src/tg_train.c
     src/tg_mlp.c
     src/tg_rng.c
-    src/attention.c
+    src/tg_attention.c
     src/tg_block.c
     src/tg_transformer.c
     src/tg_gpt.c
@@ -43,7 +43,9 @@ if(OVG_CUDA)
 endif()
 
 add_library(ottovongrad STATIC ${OVG_SOURCES})
-target_include_directories(ottovongrad PUBLIC src/)
+target_include_directories(ottovongrad
+    PUBLIC  include/ovg/
+    PRIVATE src/)
 
 if(OVG_CUDA)
     target_compile_definitions(ottovongrad PUBLIC OVG_CUDA_ENABLED)

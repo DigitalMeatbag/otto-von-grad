@@ -174,7 +174,7 @@ Tensor *Y      = tg_matmul(X_bf16, W_bf16);   /* BF16×BF16 → F32 output */
 
 ## Architecture Modules
 
-### TgSelfAttention (`attention.h`)
+### TgSelfAttention (`tg_attention.h`)
 
 Multi-head self-attention. Input shape: `[B, T, C]`. Output shape: `[B, T, C]`.
 Internally uses `reshape → transpose → batched matmul` — no per-head loop.

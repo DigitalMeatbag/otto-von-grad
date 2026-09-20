@@ -1,4 +1,4 @@
-#include "attention.h"
+#include "tg_attention.h"
 #include "ovg_error.h"
 
 #include <math.h>

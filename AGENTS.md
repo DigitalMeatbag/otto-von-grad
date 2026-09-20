@@ -16,22 +16,37 @@ This repo is a **library**. It is consumed by sibling repos checked out next to 
 
 ```text
 otto-von-grad/
-  src/
-    tg_tensor.c / tg_tensor.h       — Tensor struct, lifecycle, print helpers, tg_numel, TG_DATAF
-    tg_ops.c / tg_ops.h             — all differentiable ops + backward functions
-    tg_train.c / tg_train.h         — tg_backward (topo sort), tg_sgd_step, tg_adam_step
-    tg_mlp.c / tg_mlp.h             — TgLinear convenience layer
-    attention.c / attention.h       — TgSelfAttention, batched multi-head forward
-    tg_block.c / tg_block.h         — TgBlock (pre-norm transformer block)
-    tg_transformer.c / tg_transformer.h  — TgTransformer (stack of blocks)
-    tg_gpt.c / tg_gpt.h             — TgGPT, TgGPTConfig (embeddings + transformer + output projection)
-    tg_tokenizer.c / tg_tokenizer.h — TgVocab, tg_read_file, tg_vocab_build/encode/decode, tg_tokenize
-    tg_sample.c / tg_sample.h       — tg_sample_argmax, tg_sample_topk, tg_generate
-    tg_checkpoint.c / tg_checkpoint.h — tg_checkpoint_save / tg_checkpoint_load (binary format v2)
-    tg_cuda.cu / tg_cuda.h          — CUDA tensor lifecycle (tg_to_cuda, tg_from_cuda)
-    cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops + cuBLAS dispatch
-    ovg_error.c / ovg_error.h       — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
-    tg_rng.c / tg_rng.h             — RNG state and seeding (tg_seed, tg_seed_from_entropy)
+  include/ovg/                      — public headers (PUBLIC include dir; consumers #include these by bare name)
+    tg_tensor.h                     — Tensor struct, lifecycle, print helpers, tg_numel, TG_DATAF
+    tg_ops.h                        — all differentiable ops
+    tg_train.h                      — tg_backward, tg_sgd_step, tg_adam_step, grad clipping
+    tg_mlp.h                        — TgLinear convenience layer
+    tg_attention.h                  — TgSelfAttention
+    tg_block.h                      — TgBlock (pre-norm transformer block)
+    tg_transformer.h                — TgTransformer (stack of blocks)
+    tg_gpt.h                        — TgGPT, TgGPTConfig
+    tg_tokenizer.h                  — TgVocab, tg_read_file, tg_vocab_build/encode/decode, tg_tokenize
+    tg_sample.h                     — tg_sample_argmax, tg_sample_topk, tg_generate
+    tg_checkpoint.h                 — tg_checkpoint_save / tg_checkpoint_load (binary format v2)
+    tg_cuda.h                       — CUDA tensor lifecycle (tg_to_cuda, tg_from_cuda)
+    tg_rng.h                        — RNG state and seeding (tg_seed, tg_seed_from_entropy)
+    ovg_error.h                     — centralized fatal error handler (ovg_fatal, ovg_set_fatal_handler)
+  src/                              — implementation (PRIVATE include dir)
+    tg_tensor.c                     — Tensor lifecycle, fill helpers, print
+    tg_ops.c                        — every op's forward + paired _backward function
+    tg_train.c                      — topo sort, backward, optimizers
+    tg_mlp.c                        — TgLinear
+    tg_attention.c                  — batched multi-head attention forward
+    tg_block.c                      — TgBlock forward
+    tg_transformer.c                — TgTransformer forward + stochastic-depth schedule
+    tg_gpt.c                        — embeddings + transformer + output projection
+    tg_tokenizer.c                  — character-level byte vocabulary
+    tg_sample.c                     — sampling + generation loop
+    tg_checkpoint.c                 — binary checkpoint I/O
+    tg_rng.c                        — xorshift32 + seeding
+    ovg_error.c                     — ovg_fatal + handler hook
+    tg_cuda.cu                      — CUDA tensor upload/sync/alloc
+    cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops + cuBLAS dispatch (internal only, not exported)
     main.c                          — GPT training demo (candide.txt); saves/resumes checkpoints
   tests/
     ovg_test.h                      — minimal test assertion macros
@@ -93,7 +108,7 @@ Factory: `tg_new(int ndim, const int shape[])`. All tensors are `TG_DTYPE_F32` a
 
 ## Tensor Autograd Ops
 
-All ops in `tg_ops.c / tg_ops.h`. Every op has a paired `_backward` function — keep them together.
+All ops in `src/tg_ops.c` / `include/ovg/tg_ops.h`. Every op has a paired `_backward` function — keep them together.
 
 ### Shape / reshape
 
@@ -166,7 +181,7 @@ float tg_clip_grad_norm(Tensor **params, int n, float max_norm, float eps);
 
 ## Attention Module
 
-File: `attention.c / attention.h`
+File: `src/tg_attention.c` / `include/ovg/tg_attention.h`
 
 Input shape: `[B, T, C]`. Output shape: `[B, T, C]`.
 
@@ -190,7 +205,7 @@ No per-head loop — removed in v2. No `n_heads > TG_MAX_PARENTS` ceiling.
 
 ## Transformer Block
 
-File: `tg_block.c / tg_block.h`
+File: `src/tg_block.c` / `include/ovg/tg_block.h`
 
 Pre-norm architecture: LayerNorm → Attention → dropout/drop-path → residual → LayerNorm → FFN → dropout/drop-path → residual.
 
@@ -258,7 +273,7 @@ int     tg_gpt_collect_params(TgGPT *g, Tensor **params, int max_params);
 
 ## Tokenizer
 
-File: `tg_tokenizer.c / tg_tokenizer.h`
+File: `src/tg_tokenizer.c` / `include/ovg/tg_tokenizer.h`
 
 Character-level byte vocabulary.
 
@@ -367,10 +382,17 @@ ovg_set_fatal_handler(my_handler);  // install pre-exit hook (not thread-safe)
 
 ## Include Style
 
+Public headers live in `include/ovg/`, which is the library's `PUBLIC` include directory, so both
+in-tree code and consumers include them by bare name:
+
 ```c
 #include "tg_ops.h"    // ops + Tensor struct (via tg_tensor.h)
 #include "tg_train.h"  // tg_backward, optimizers (+ Tensor struct)
 ```
+
+`src/` is `PRIVATE`. `cuda_ops.h` is the only header there — it is the kernel dispatch layer and is
+not part of the public surface. A new public function gets its prototype in the matching
+`include/ovg/` header; a new internal helper stays in `src/`.
 
 ---
 

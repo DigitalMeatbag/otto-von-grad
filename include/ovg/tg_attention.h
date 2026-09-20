@@ -1,5 +1,5 @@
-#ifndef ATTENTION_H
-#define ATTENTION_H
+#ifndef TG_ATTENTION_H
+#define TG_ATTENTION_H
 
 #include "tg_ops.h"
 
