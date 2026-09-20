@@ -312,6 +312,7 @@ typedef struct { char chars[256]; int ids[256]; int size; } TgVocab;
 
 char    *tg_read_file(const char *path, int *out_len);             // malloc'd; caller frees
 TgVocab  tg_vocab_build(const char *text, int len);
+TgVocab  tg_vocab_from_chars(const char *chars);                   // ids in ascending ASCII order (matches tg_vocab_build); pins vocab across phases
 int      tg_vocab_encode(const TgVocab *v, char c);                // ovg_fatal on unknown char
 char     tg_vocab_decode(const TgVocab *v, int id);                // ovg_fatal on bad id
 int     *tg_tokenize(const char *text, int len, const TgVocab *v); // malloc'd; caller frees

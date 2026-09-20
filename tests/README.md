@@ -3,35 +3,43 @@
 ## Running
 
 ```powershell
-cmake -B build -G Ninja          # or add -DOVG_CUDA=ON for GPU tests
-cmake --build build
+cmake --preset default              # or `cpu` for a CUDA-free build (CUDA tests are skipped)
+cmake --build --preset default
 .\build\otto_von_grad_tests.exe
 ```
 
 Or via CTest:
 
 ```powershell
-ctest --test-dir build
+ctest -C Release --test-dir build
 ```
 
-The test binary exits 0 (all pass) or 1 (any failure). Each test prints `pass:` or `FAIL:`.
+The test binary exits 0 (all pass) or 1 (any failure). Each test prints `pass:` or `FAIL:`, and
+the run ends with `N passed, M failed`. The seed is printed first so a failure can be replayed.
 
 ## Structure
+
+One test file per module, linked against `ovg_lm` so every layer is reachable.
 
 | File | Contents |
 |---|---|
 | `ovg_test.h` | `OVG_CHECK`, `OVG_CHECK_EQ`, `OVG_CHECK_NEAR`, `OVG_CHECK_SHAPE`, `RUN_TEST` macros |
-| `test_main.c` | Entry point; calls all suite `run_*_tests` functions and prints summary |
-| `test_ops.c` | Arithmetic (add/sub/mul/pow/matmul), reductions, layer_norm, softmax, cross_entropy, embed, concat_rows, row_slice, rng_uniform, drop_path schedule + inference no-op; error-path tests via `setjmp`/`longjmp` |
-| `test_train.c` | SGD direction, `tg_backward` grad zeroing, `tg_backward_accum` accumulation, transpose grad accumulation |
-| `test_attention.c` | Causal attention (single/multi-head) grad coverage, encoder row-sum and bidirectionality |
-| `test_gpt.c` | Param-count capacity check, GPT forward output shape |
+| `test_main.c` | Entry point; seeds the RNG, calls every suite's `run_*_tests`, prints the summary |
+| `test_ops.c` | Forward and gradient checks for every op (arithmetic, matmul, reductions, layer_norm, softmax, activations, dropout, embed, cross-entropy dense/sparse/no-sync, reshape, expand_dim, slice); shape-mismatch and out-of-bounds error paths via `setjmp`/`longjmp`; layer_norm finite-difference check; drop-path schedule; CUDA: BF16 cast round-trip and matmul, N-D ops, large causal mask |
+| `test_train.c` | SGD direction, `tg_backward` grad zeroing, `tg_backward_accum` accumulation, transpose grad accumulation, grad-norm clipping (CPU and CUDA) |
+| `test_attention.c` | Causal attention gradients (single and multi-head), encoder attention weights, batch=1 vs batched parity, lower-ndim matmul broadcast |
+| `test_gpt.c` | `tg_gpt_collect_params` capacity, forward output shape at batch 1 and batch 2 |
+| `test_tokenizer.c` | Vocab build, encode/decode round-trip, `tg_tokenize` values, `tg_vocab_from_chars` |
+| `test_checkpoint.c` | Save/load round-trip (CPU and CUDA), bad magic rejected, param-count mismatch rejected |
+| `test_sample.c` | Argmax, top-k determinism and range, `tg_generate` callback count and `tg_training` restore; CUDA argmax/top-k |
 
 ## Writing new tests
 
 Each test is a `static void` function. Use the `OVG_CHECK*` macros — on failure they print
 `file:line: FAIL` to stderr, set `ovg_test_failed = 1`, and `return` from the test function.
-Register your test with `RUN_TEST` inside the appropriate `run_*_tests` function.
+Register the test with `RUN_TEST` inside the appropriate `run_*_tests` function. A test for a new
+module gets its own `test_<module>.c`, a `run_<module>_tests` prototype called from `test_main.c`,
+and an entry in the `otto_von_grad_tests` source list in `CMakeLists.txt`.
 
 ### Error-path tests
 
@@ -68,5 +76,6 @@ Tensors allocated before `longjmp` will leak — acceptable in test code.
 
 ## CUDA tests
 
-Tests guarded with `#ifdef OVG_CUDA_ENABLED` are compiled and run automatically when
-the library is built with `-DOVG_CUDA=ON`. They are skipped in CPU-only builds.
+Tests guarded with `#ifdef OVG_CUDA_ENABLED` are compiled and run automatically when the library
+is built with `OVG_CUDA=ON` (the `default` and `debug` presets). They are skipped in the `cpu`
+preset, which is why that build reports 65 tests rather than 73.
