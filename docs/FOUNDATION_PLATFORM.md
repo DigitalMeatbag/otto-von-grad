@@ -390,7 +390,7 @@ These are model-agnostic — any ViT, and later the encoder side of a latent dif
 
 ### Follow-ups
 
-- Open (Phase 2 spec): whether `tg_mean_rows` (2D-only) generalises to a mean over a chosen axis so mean-pooling works on `[B, T, C]`, or the pooling helper composes existing ops. It gates `tg_pool_mean_tokens`.
+- Closed (2026-09-20, `docs/SPEC_PLATFORM_PHASE2_VISION.md` → Decisions this spec makes): `tg_mean_rows` stays 2D; `tg_pool_mean_tokens` composes `tg_transpose → tg_reshape → tg_mean_rows → tg_reshape`. Two extra full-size copies per forward, accepted under the Performance Posture; a `tg_mean_axis` in `ovg_core` behind the same helper signature is permitted later if a profile asks for it.
 
 ### Decision
 
