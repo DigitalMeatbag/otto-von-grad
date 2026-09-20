@@ -1,6 +1,6 @@
 #ifdef OVG_CUDA_ENABLED
 
-#include "tg_cuda.h"
+#include "tg_cuda_internal.h"
 #include "tg_tensor.h"
 #include "ovg_error.h"
 

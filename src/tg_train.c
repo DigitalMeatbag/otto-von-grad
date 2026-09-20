@@ -5,7 +5,7 @@
 #include <stdlib.h>
 
 #ifdef OVG_CUDA_ENABLED
-#include "tg_cuda.h"
+#include "tg_cuda_internal.h"
 #include "cuda_ops.h"
 #endif
 

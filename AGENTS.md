@@ -41,6 +41,7 @@ otto-von-grad/
     tg_rng.c                        — xorshift32 + seeding
     ovg_error.c                     — ovg_fatal + handler hook
     tg_cuda.cu                      — CUDA tensor upload/sync/alloc
+    tg_cuda_internal.h              — device plumbing for ops/train (tg_cuda_alloc, cache buffers, grad zeroing); private
     cuda_ops.cu / cuda_ops.h        — CUDA kernels for all ops + cuBLAS dispatch (internal only, not exported)
     [nn → ovg_nn]
     tg_mlp.c                        — TgLinear
@@ -354,7 +355,8 @@ Enabled via `OVG_CUDA=ON`. When enabled:
 - All ops dispatch to GPU kernels when `t->on_cuda == 1`
 - cuBLAS handles matmul: `SgemmStridedBatched` (N-D F32), `cublasSgemm` (2D F32), `cublasGemmEx` (BF16 with `CUBLAS_COMPUTE_32F`)
 - `tg_to_cuda(t)` uploads F32 tensor to device; `tg_from_cuda(t)` syncs back
-- `tg_cuda_alloc(t)` allocates device data+grad; element size is dtype-aware (2 bytes for BF16, 4 for F32)
+- Public surface (`tg_cuda.h`): `tg_to_cuda`, `tg_from_cuda`, `tg_cuda_free`, `tg_cuda_malloc_floats` / `tg_cuda_free_floats` (device buffers for `tg_adam_step_gpu` moments)
+- Internal (`src/tg_cuda_internal.h`, used by `tg_ops.c` / `tg_train.c` only): `tg_cuda_alloc(t)` allocates device data+grad with dtype-aware element size (2 bytes for BF16, 4 for F32); `tg_cuda_alloc_cache` / `tg_cuda_upload_cache` for op scratch; `tg_cuda_zero_grad`, `tg_cuda_set_grad_scalar` for backward
 - Every op's forward and backward has a correct CPU path. BF16 tensors are CUDA-only (assert on CPU).
 
 ---
@@ -422,8 +424,9 @@ in-tree code and consumers include them by bare name:
 #include "tg_train.h"  // tg_backward, optimizers (+ Tensor struct)
 ```
 
-`src/` is `PRIVATE`. `cuda_ops.h` is the only header there — it is the kernel dispatch layer and is
-not part of the public surface. A new public function gets its prototype in the matching
+`src/` is `PRIVATE`. Two headers live there and are not part of the public surface: `cuda_ops.h`
+(kernel dispatch) and `tg_cuda_internal.h` (device plumbing for ops/train). A `.c` file that needs
+both the public and internal CUDA functions includes `tg_cuda_internal.h`, which pulls in `tg_cuda.h`. A new public function gets its prototype in the matching
 `include/ovg/` header; a new internal helper stays in `src/`.
 
 ---
