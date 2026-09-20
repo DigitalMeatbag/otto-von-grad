@@ -13,6 +13,7 @@ static void ensure_dir(const char *path) { mkdir(path, 0755); }
 
 #include "tg_ops.h"
 #include "tg_train.h"
+#include "tg_optim.h"
 #include "tg_gpt.h"
 #include "tg_tokenizer.h"
 #include "tg_sample.h"
@@ -97,28 +98,23 @@ int main(void) {
     printf("train tokens: %d  val tokens: %d\n", val_start, val_len);
     printf("baseline ln(%d) ~= %.6f\n", vocab.size, logf((float)vocab.size));
 
-    /* Resume from checkpoint if available */
-    if (tg_checkpoint_load(CHECKPOINT_PATH, params, n_params) == 0)
-        printf("[ovg] resumed from %s\n", CHECKPOINT_PATH);
+    /* Optimizer first, then resume: load_run restores params, Adam moments, the
+       cumulative step, and the RNG state. tg_seed_from_entropy() above must
+       precede this call or it would clobber the restored RNG state. */
+    TgAdam opt = tg_adam_create(params, n_params, beta1, beta2, adam_eps);
+    if (tg_checkpoint_load_run(CHECKPOINT_PATH, &opt, TG_LOAD_RESUME, NULL) == 0)
+        printf("[ovg] resumed from %s at step %d\n", CHECKPOINT_PATH, opt.step);
     else
         printf("[ovg] no checkpoint found — training from scratch\n");
-
-    /* Adam moment buffers — always zero-initialized; optimizer state is not
-       checkpointed, so a resumed run restarts momentum from scratch. */
-    float **m_buf = calloc((size_t)n_params, sizeof(float *));
-    float **v_buf = calloc((size_t)n_params, sizeof(float *));
-    if (!m_buf || !v_buf) { fprintf(stderr, "out of memory\n"); exit(1); }
-    for (int i = 0; i < n_params; i++) {
-        size_t nel = (size_t)tg_numel(params[i]);
-        m_buf[i]   = calloc(nel, sizeof(float));
-        v_buf[i]   = calloc(nel, sizeof(float));
-        if (!m_buf[i] || !v_buf[i]) { fprintf(stderr, "out of memory\n"); exit(1); }
-    }
+    ensure_dir(CHECKPOINT_DIR);
 
     int *inputs  = malloc((size_t)T * sizeof(int));
     int *targets = malloc((size_t)T * sizeof(int));
     if (!inputs || !targets) { fprintf(stderr, "out of memory\n"); exit(1); }
 
+    /* Each run trains `steps` more steps: `step` is this run's counter and drives
+       the data order; opt.step is the cumulative count and drives Adam's bias
+       correction. */
     tg_training = 1;
     for (int step = 1; step <= steps; step++) {
         int start = (step * 17) % max_train;
@@ -131,14 +127,16 @@ int main(void) {
         Tensor *logits  = tg_gpt_forward(&gpt, inputs, 1);
         Tensor *loss    = tg_cross_entropy(logits, tgt_hot);
 
-        tg_backward(loss);
-        tg_adam_step(params, m_buf, v_buf, n_params, lr, step, beta1, beta2, adam_eps);
+        int   log_now    = (step == 1 || step % 200 == 0);
+        float train_loss = log_now ? tg_scalar_value(loss) : 0.0f;  /* before accumulate frees the graph */
 
-        if (step == 1 || step % 200 == 0) {
-            float train_loss = TG_DATAF(loss)[0];
+        tg_adam_zero_grads(&opt);
+        tg_adam_accumulate(&opt, loss, 1);
+        tg_adam_update(&opt, lr, 0.0f);
 
+        if (log_now) {
             /* Val loss: one window sampled from the held-out set */
-            tg_training = 0;
+            int prev = tg_eval_begin();
             int vstart = val_start + (step % val_max_step);
             for (int i = 0; i < T; i++) {
                 inputs[i]  = all_tokens[vstart + i];
@@ -147,17 +145,19 @@ int main(void) {
             Tensor *vhot  = make_one_hot(targets, T, vocab.size);
             Tensor *vlog  = tg_gpt_forward(&gpt, inputs, 1);
             Tensor *vloss = tg_cross_entropy(vlog, vhot);
-            printf("step %4d/%d  train: %.6f  val: %.6f\n",
-                   step, steps, train_loss, TG_DATAF(vloss)[0]);
+            printf("step %4d/%d (total %d)  train: %.6f  val: %.6f\n",
+                   step, steps, opt.step, train_loss, tg_scalar_value(vloss));
             tg_free_graph(vloss);
-            tg_training = 1;
+            tg_eval_end(prev);
         }
 
-        tg_free_graph(loss);
+        /* Periodic save so a Ctrl-C loses at most 200 steps */
+        if (step % 200 == 0)
+            tg_checkpoint_save_run(CHECKPOINT_PATH, &opt, &cfg, (int)sizeof cfg);
     }
 
     /* Final eval on the first T tokens */
-    tg_training = 0;
+    int prev_training = tg_eval_begin();
     for (int i = 0; i < T; i++) {
         inputs[i]  = all_tokens[i];
         targets[i] = all_tokens[i + 1];
@@ -165,7 +165,7 @@ int main(void) {
     Tensor *eval_tgt_hot = make_one_hot(targets, T, vocab.size);
     Tensor *eval_logits  = tg_gpt_forward(&gpt, inputs, 1);
     Tensor *eval_loss    = tg_cross_entropy(eval_logits, eval_tgt_hot);
-    printf("final eval loss: %.6f\n", TG_DATAF(eval_loss)[0]);
+    printf("final eval loss: %.6f\n", tg_scalar_value(eval_loss));
 
     printf("generated: ");
     for (int i = 0; i < T; i++) putchar(tg_vocab_decode(&vocab, inputs[i]));
@@ -173,15 +173,13 @@ int main(void) {
     printf("\n");
 
     tg_free_graph(eval_loss);
+    tg_eval_end(prev_training);
 
-    /* Save checkpoint */
-    ensure_dir(CHECKPOINT_DIR);
-    if (tg_checkpoint_save(CHECKPOINT_PATH, params, n_params) == 0)
-        printf("[ovg] checkpoint saved to %s\n", CHECKPOINT_PATH);
+    /* Save checkpoint (params + optimizer state + step + RNG state) */
+    if (tg_checkpoint_save_run(CHECKPOINT_PATH, &opt, &cfg, (int)sizeof cfg) == 0)
+        printf("[ovg] checkpoint saved to %s (step %d)\n", CHECKPOINT_PATH, opt.step);
 
-    for (int i = 0; i < n_params; i++) { free(m_buf[i]); free(v_buf[i]); }
-    free(m_buf);
-    free(v_buf);
+    tg_adam_free(&opt);
     tg_gpt_free(&gpt);
     free(params);
     free(inputs);
