@@ -204,7 +204,7 @@ void  tg_sgd_step(Tensor **params, int n, float lr);
 void  tg_adam_step(Tensor **params, float **m, float **v, int n,
                    float lr, int t, float b1, float b2, float eps);
 void  tg_adam_step_gpu(Tensor **params, float **m_gpu, float **v_gpu, int n,
-                       float lr, int t, float b1, float b2, float eps);  // GPU, moment buffers on device
+                       float lr, int t, float b1, float b2, float eps);  // GPU, moment buffers on device; only declared when OVG_CUDA_ENABLED
 void  tg_free_graph(Tensor *root);
 float tg_clip_grad_norm(Tensor **params, int n, float max_norm, float eps);
 // CUDA path: clips on device, returns 0.0f

@@ -55,8 +55,8 @@ success metrics by themselves.
 | Complete stack in a few thousand lines | ~7k lines including tests and CUDA kernels | Roughly doubles through Phase 3; re-count before quoting a number. |
 | Small, controlled dependency surface | CPU uses the C toolchain/runtime; acceleration adds the CUDA toolkit, runtime, driver, and cuBLAS | Keep dependencies explicit and bounded; do not describe this as "no supply chain." |
 | Every op has its gradient beside it | Enforced coding rule; 80 tests | — |
-| Exact resume from any checkpoint | Decided (Phase 1); not yet built | Do not claim until Phase 1 ships. |
-| Independently usable modality packages | `ovg_lm` exists; `ovg_vision` Phase 2; `ovg_diffusion` Phase 4 | One of three today. |
+| Exact resume from a v3 checkpoint | Decided (Phase 1); not yet built | Do not claim until Phase 1 ships; v2 files load weights only. |
+| Independently usable modality packages | `ovg_lm` exists; `ovg_vision` Phase 2; `ovg_diffusion` Phase 3 | One of three today. |
 | Proven by real applications | `lambda` (GPT) and `vexilloscope` (ViT) both build; vexilloscope needs a retrain | Image generation has no application yet. |
 | Trains on a single consumer GPU | RTX 4070 Super, 12 GB, is the reference machine | Yes for focused models; see below. |
 
@@ -104,7 +104,7 @@ The layering work of 2026-09-20 (see Brownfield Baseline) made the boundaries re
 
 ## Brownfield Baseline (as of 2026-09-20)
 
-State on the `refactor` branch, commits `93ff570`..`5f83f16`, unpushed at time of writing:
+State as of commit `5f83f16` (the range `93ff570`..`5f83f16`, merged to `master` and pushed):
 
 - **Build graph:** three static targets with dependencies strictly downward, plus an umbrella.
   - `ovg_core` — `Tensor` (N-D, `TG_MAX_DIMS = 4`), ~30 differentiable ops each paired with its backward, topological-sort backward, SGD and Adam (CPU and GPU), gradient-norm clipping, RNG, binary checkpoint I/O (format v2, shape-validated), fatal-error hook, CUDA kernels with cuBLAS matmul and BF16 matmul.
@@ -118,7 +118,7 @@ State on the `refactor` branch, commits `93ff570`..`5f83f16`, unpushed at time o
 - **Tests:** 80 (CUDA build) / 71 (CPU build), one file per module, linked against `ovg_lm`. The test binary therefore cannot detect a layer violation; that boundary is enforced by grep and by building each target standalone, as documented in `AGENTS.md` Verification.
 - **Consumers:**
   - `lambda` builds against current OVG with no changes to its CMake.
-  - `vexilloscope` was stuck on the v1 API since the v2 N-D migration (2026-05-28). Its port is in progress in that repo: a mechanical pass (`->data` → `TG_DATAF`, `->rows/->cols` → `shape[]`, two-int `tg_new` → N-D form), `tg_concat_rows` → `tg_concat`, `tg_row_slice` → `tg_slice` + `tg_reshape` on the now-3D encoder output, `cuda_smoke.c` deleted. It compiles with zero warnings and links `ovg_nn` only. Its v1 weights file cannot load — v1 stored LayerNorm affine and FFN bias parameters pre-tiled to `[seq_len, C]`, v2 stores `[1, C]` — so a retrain is required.
+  - `vexilloscope` was stuck on the v1 API since the v2 N-D migration (2026-05-28). Its port is committed in that repo (`ef4b230`): a mechanical pass (`->data` → `TG_DATAF`, `->rows/->cols` → `shape[]`, two-int `tg_new` → N-D form), `tg_concat_rows` → `tg_concat`, `tg_row_slice` → `tg_slice` + `tg_reshape` on the now-3D encoder output, `cuda_smoke.c` deleted. It compiles with zero warnings and links `ovg_nn` only. Its v1 weights file cannot load — v1 stored LayerNorm affine and FFN bias parameters pre-tiled to `[seq_len, C]`, v2 stores `[1, C]` — so a retrain is required and is the outstanding item.
 - **Includes remain bare.** The namespaced form (`#include "ovg/tg_ops.h"`, `include/ovg/lm/`) is deferred until a modality package is actually about to be published separately.
 
 Known ceilings carried forward from `AGENTS.md`:
@@ -139,7 +139,7 @@ modality packages     ovg_lm · ovg_vision · ovg_diffusion                     
                       gpt/tokenizer/sampler · patch embed/pooling · unet/schedule/sampler
                              │
 building blocks       ovg_nn    linear, attention, transformer block/stack,
-                               conv / residual blocks, norms
+                               conv residual / down / up blocks
                              │
 engine + harness      ovg_core  tensor, ops (incl. conv family), autograd,
                                optimizers + schedules + accumulation, checkpoint, RNG, CUDA
@@ -163,9 +163,12 @@ Extends the rule already in `AGENTS.md` → Library Layers:
 | operates on `Tensor` with no notion of a model (an op, an optimizer, a schedule, checkpoint I/O) | `ovg_core` |
 | is a parameterized module any architecture could reuse (a linear, an attention, a conv block, a norm) | `ovg_nn` |
 | assumes a modality — tokens, pixels as images, noise timesteps | the matching modality package |
+| does not assume a data type, but every plausible consumer shares one modality (a patch embedding, token pooling) | the matching modality package |
 | loads, augments, or describes data; parses a CLI; writes reports | the application repo |
 
 If a lower layer needs something from a higher one, the thing is in the wrong layer: move it down rather than adding the include.
+
+**Second-consumer rule.** A modality package is created when a second consumer for it exists or is imminent, or when it is about to be published on its own. Until then, candidate modules stay in `ovg_nn` if they do not assume a data type, or in the first consumer's repo if they do.
 
 ---
 
@@ -195,7 +198,7 @@ The platform is specified in phases, each producing one implementable slice with
 docs/SPEC_PLATFORM_PHASE1_HARNESS.md
 ```
 
-Scope: the training harness (optimizer state as a struct, LR schedules, gradient accumulation helper, checkpoint format v3 with optimizer state and metadata header, exact-resume on by default), followed by migrating `examples/candide.c`, `../lambda`, and `../vexilloscope` onto it. Completion signal: all three consumers train through the harness, and vexilloscope's `main.c` shrinks by the harness code it no longer owns.
+Scope: the training harness (optimizer state as a struct, LR schedules, gradient accumulation helper, an evaluation-loop skeleton, checkpoint format v3 with optimizer state, RNG state and a metadata header, exact-resume on by default with an explicit init-from-weights load mode), followed by migrating `examples/candide.c`, `../lambda`, and `../vexilloscope` onto it. Completion signal: all three consumers train through the harness, and vexilloscope's `main.c` shrinks by the harness code it no longer owns.
 
 ### Phase 1 Non-Goals
 
@@ -209,8 +212,8 @@ Scope: the training harness (optimizer state as a struct, LR schedules, gradient
 
 ```text
 SPEC_PLATFORM_PHASE2_VISION.md       # TgLinear fix + rename; new ovg_vision target with TgPatchEmbed + pooling; vexilloscope adopts both
-SPEC_PLATFORM_PHASE3_CONV.md         # iterative topo_sort + growable graph; conv family, group_norm, silu/sigmoid, sinusoidal embedding — driven by a first DDPM
-SPEC_PLATFORM_PHASE4_PACKAGES.md     # ovg_diffusion target, namespaced includes, extraction readiness
+SPEC_PLATFORM_PHASE3_CONV.md         # iterative topo_sort + growable graph; conv2d, group_norm, silu, upsample2d, sinusoidal embedding; new ovg_diffusion target (UNet, schedule, sampler) — driven by a first DDPM
+SPEC_PLATFORM_PHASE4_PACKAGES.md     # namespaced includes, extraction readiness
 ```
 
 Names and boundaries may shift; the principle should not: spec only the next implementable slice.
@@ -222,13 +225,13 @@ Names and boundaries may shift; the principle should not: spec only the next imp
 | Topic | Status | Decision |
 |---|---|---|
 | Four-tier layering | Closed | engine+harness (`ovg_core`) → building blocks (`ovg_nn`) → modality packages (`ovg_lm`, later `ovg_vision`, `ovg_diffusion`) → applications in sibling repos. Dependencies strictly downward. |
-| Placement rule | Closed | op/optimizer/schedule → core; reusable parameterized module → nn; assumes a modality → package; data/CLI/reports → app. |
+| Placement rule | Closed | op/optimizer/schedule → core; reusable parameterized module → nn; assumes a modality, or reusable only within one modality → package; data/CLI/reports → app. Packages are created under the second-consumer rule. |
 | `ovg_lm` as the package template | Closed | New modality packages copy `ovg_lm`'s shape: a few modules, links `ovg_nn`, own tests, no data loading. |
 | `ottovongrad` umbrella | Closed | Kept indefinitely as the everything-included default; consumers are encouraged but not required to link a narrower target. |
 | Bare vs. namespaced includes | Closed (deferred) | Stay bare until a package is about to be published separately; then switch in one commit, verifiable by zero `C1083` across consumers. |
-| Training harness placement | Closed | In `ovg_core`, finishing `tg_train.h`. Exact-resume is default on: checkpoints save optimizer state and step; parameter-only v2 files still load with moments rebuilt. |
+| Training harness placement | Closed | In `ovg_core`, finishing `tg_train.h`. Exact-resume is default on: checkpoints save optimizer state, step, and RNG state; load takes an explicit mode (resume, or init-from-weights for warm starts); parameter-only v2 files still load with moments zeroed and step reset. |
 | `TgLinear` fate | Closed | Fix in place and rename to `tg_linear.h`: bias `[1, n_out]` expanded at forward, no baked-in batch, no out-parameter. |
-| Conv family scope | Closed | Driven by a first concrete DDPM (~32×32 RGB, small UNet, one attention level). First `conv2d` is im2col + cuBLAS GEMM, no cuDNN. `group_norm` is a separate op; `layer_norm` untouched. |
+| Conv family scope | Closed | Driven by a first concrete DDPM (~32×32 RGB, small UNet, one attention level). First `conv2d` is im2col + cuBLAS GEMM, no cuDNN. `group_norm` is a separate op; `layer_norm` untouched. `ovg_diffusion` (UNet assembly, schedule, sampler) is created in Phase 3 so the DDPM can be trained and sampled. |
 | Vision-block placement | Closed | Create `ovg_vision` now (Phase 2). Further vision consumers are imminent, which satisfies the second-consumer rule ahead of time. |
 | Graph and dimension limits | Closed | `TG_MAX_DIMS` stays 4 — no plans need more. `topo_sort` goes iterative with growable graph capacity as a Phase 3 prerequisite. |
 
@@ -250,7 +253,7 @@ This is the single largest body of code duplicated across consumers. A survey of
 | Warmup + cosine LR schedule | — | — | yes |
 | Gradient accumulation | — | — | yes |
 | Gradient-norm clipping | — | — | yes |
-| Eval loop | yes | yes | yes (27 sites) |
+| Eval loop | yes | yes | yes |
 | Weight save/load | `tg_checkpoint` | `tg_checkpoint` | own 362-line format in `vit.c` |
 
 vexilloscope's is the most complete and is the reference implementation to lift. Its hand-rolled weight format is also what broke silently across the v1→v2 shape change; `tg_checkpoint` validates shapes on load and would have failed loudly.
@@ -284,12 +287,12 @@ Add `tg_optim.h` (an `TgAdam` struct owning `m`/`v` buffers, CPU or device, with
 Same code, own static library linking `ovg_core`. `ovg_nn` does not depend on it; modality packages and applications link it explicitly.
 
 - Pro: keeps `ovg_core` minimal and makes "engine" vs "harness" a build-graph fact.
-- Con: a fourth target for ~300 lines; every consumer links it anyway; the `ovg_nn`-doesn't-need-it distinction buys nothing today since nothing links `ovg_nn` without training.
+- Con: a fourth target for a few hundred lines; every consumer links it anyway; the `ovg_nn`-doesn't-need-it distinction buys nothing today since nothing links `ovg_nn` without training.
 - Con: `tg_train.h` (backward, SGD, Adam, clip) is already in core, so the split would either move existing code up or leave the optimizer family straddling two targets.
 
 ### Follow-ups
 
-- Confirm whether lambda's curriculum loop needs anything the vexilloscope harness lacks (e.g. per-phase LR resets) before fixing the schedule API.
+- Closed: lambda's curriculum loop uses a constant LR (3e-4) with no schedule, and chains phases by loading phase N−1's checkpoint as phase N's starting weights (`lambda/src/main.c:108-113`). It needs nothing from the schedule API; it needs the init-from-weights load mode (see Decision).
 - Closed: optimizer state is saved by default (see Decision).
 
 ### Decision
@@ -298,8 +301,9 @@ Closed (2026-09-20): **Option A.** The harness lives in `ovg_core`, finishing `t
 
 **Exact-resume is default on.** The owner regularly stops and restarts long runs, so a resumed run must continue from the same optimizer state, not from zeroed moments. Consequences for the Phase 1 spec:
 
-- The checkpoint gains an optimizer-state section (Adam `m`/`v` per parameter, step counter, and the harness's schedule position) and a small metadata header (see Open Questions: self-describing checkpoints). This is format v3 with a new magic; `tg_checkpoint_load` continues to accept v2 parameter-only files and reports that moments were rebuilt.
-- Saving optimizer state is the default; a flag disables it for "weights-only" exports (inference artifacts, sharing).
+- The checkpoint gains an optimizer-state section (Adam `m`/`v` per parameter and the step counter — schedules are pure functions of step, so no separate schedule position is stored) and a small metadata header: format version, RNG state, and a caller-supplied config blob. The exact header fields are a Phase 1 spec question. RNG state is the xorshift32 word: `rand()` is used only by the init-time fill helpers, so every per-step draw (dropout, drop-path, sampling) is on the xorshift stream and one word restores it. This is format v3 with a new magic; `tg_checkpoint_load` continues to accept v2 parameter-only files, re-initializes moments to zero, resets the step counter to 0 (Adam's bias correction depends on it), and reports that it did so.
+- **Load takes an explicit mode.** `resume` (the default) restores parameters, optimizer state, step, and RNG state. `init-from-weights` restores parameters only and leaves the optimizer fresh at step 0. Warm-starting one run from another's checkpoint — lambda's curriculum phases are the existing case — uses the second; the default must never silently carry a previous run's moments and step into a new run.
+- Saving optimizer state is the default; a flag disables it for "weights-only" exports (inference artifacts, sharing). Whether a weights-only export is written as v2 or as v3 with an empty optimizer section is a Phase 1 spec question.
 - Device-resident moments (`tg_adam_step_gpu`) are synced to host on save; the harness owns that, not the caller.
 
 ---
@@ -384,11 +388,11 @@ These are model-agnostic — any ViT, and later the encoder side of a latent dif
 
 ### Follow-ups
 
-- Check whether `tg_mean_rows` (2D-only) should generalise to a mean over a chosen axis so mean-pooling works on `[B, T, C]`.
+- Open (Phase 2 spec): whether `tg_mean_rows` (2D-only) generalises to a mean over a chosen axis so mean-pooling works on `[B, T, C]`, or the pooling helper composes existing ops. It gates `tg_pool_mean_tokens`.
 
 ### Decision
 
-Closed (2026-09-20): **Option B — create `ovg_vision` now, in Phase 2.** The owner has further vision consumers imminent (at minimum the encoder side of an image-generation project), which satisfies the second-consumer rule ahead of time; creating the package while it is ~100 lines is cheaper than extracting it later. `ovg_vision` links `ovg_nn`, mirrors `ovg_lm`'s shape (a few modules, own tests, no data loading), and initially holds `TgPatchEmbed` and the token-pooling helpers. vexilloscope becomes its first consumer and links `ovg_vision` instead of `ovg_nn`.
+Closed (2026-09-20): **Option B — create `ovg_vision` now, in Phase 2.** The owner has further vision consumers imminent (at minimum the encoder side of an image-generation project), which satisfies the second-consumer rule ahead of time; creating the package while it is ~100 lines is cheaper than extracting it later. `ovg_vision` links `ovg_nn`, mirrors `ovg_lm`'s shape (a few modules, own tests, no data loading), and initially holds `TgPatchEmbed` and the token-pooling helpers. vexilloscope becomes its first consumer and links `ovg_vision` instead of `ovg_nn`. These modules do not assume pixels, only a token layout; they are placed in `ovg_vision` under the placement rule's modality-consumer clause, not because they assume a data type.
 
 ---
 
@@ -407,7 +411,7 @@ The ops a UNet-style image generator needs that `ovg_core` lacks, checked agains
 | sinusoidal timestep / position embedding | no |
 | `concat` for skip connections | **yes** (added 2026-09-20) |
 
-Above the ops: residual conv blocks, down/up-sampling blocks, an attention block over flattened spatial positions (reuse `TgSelfAttention`), and the UNet assembly. Above that, in a modality package: a noise schedule and a sampler (DDPM / DDIM), mirroring `ovg_lm`'s tokenizer + sampler pair.
+Above the ops, in `ovg_nn`: residual conv blocks, down/up-sampling blocks, and an attention block over flattened spatial positions (reuse `TgSelfAttention`). Above that, in `ovg_diffusion`: the UNet assembly (it takes a timestep embedding, so it assumes noise timesteps), a noise schedule, and a sampler (DDPM / DDIM), mirroring `ovg_lm`'s model + tokenizer + sampler shape.
 
 ### Why It Matters
 
@@ -452,7 +456,7 @@ Pick a small DDPM (e.g. 32×32, 3 channels, a handful of residual blocks, one at
 
 ### Decision
 
-Closed (2026-09-20): **Option B — driven by a first concrete model.** The Phase 3 spec names a small DDPM (about 32×32 RGB, a few residual blocks, one attention level over flattened spatial positions) and builds exactly the ops it needs — expected: `conv2d` (also used strided for downsampling), `group_norm`, `silu`, nearest `upsample2d`, sinusoidal timestep embedding. `conv_transpose2d` and `max_pool2d` are not built until a model calls for them. The completion signal is that the model trains and sampling from noise produces recognizable images, not that op tests pass in isolation. The `topo_sort` / graph-capacity change is a prerequisite of the same phase.
+Closed (2026-09-20): **Option B — driven by a first concrete model.** The Phase 3 spec names a small DDPM (about 32×32 RGB, a few residual blocks, one attention level over flattened spatial positions) and builds exactly the ops it needs — expected: `conv2d` (also used strided for downsampling), `group_norm`, `silu`, nearest `upsample2d`, sinusoidal timestep embedding. `conv_transpose2d` and `max_pool2d` are not built until a model calls for them. The completion signal is that the model trains and sampling from noise produces recognizable images, not that op tests pass in isolation. The `topo_sort` / graph-capacity change is a prerequisite of the same phase. Because the signal requires a schedule and a sampler, **`ovg_diffusion` is created in Phase 3**, holding the UNet assembly, the noise schedule, and the sampler; the conv blocks below it go in `ovg_nn`. Phase 4 is then namespaced includes and extraction readiness only.
 
 Two implementation choices are fixed here so the spec does not reopen them:
 
@@ -512,6 +516,5 @@ Nothing below that line (graph compilation, memory planning, cuDNN) is on the ro
 
 ## Open Questions Not Yet Assigned to a Topic
 
-- Closed with the harness decision: `tg_checkpoint` format v3 carries a metadata header (step, RNG seed, and a caller-supplied config blob) alongside optimizer state. The exact header fields are a Phase 1 spec question.
 - Does `ovg_lm` need a KV cache before any "focused GPT" is considered done, or is O(T²) generation acceptable at the sequence lengths those projects use?
 - When `ovg_vision` and `ovg_diffusion` exist, does `ovg_lm` keep its name or do all three adopt a common pattern (`ovg_text`?) — cosmetic, decide at Phase 4.
