@@ -56,7 +56,7 @@ success metrics by themselves.
 | Small, controlled dependency surface | CPU uses the C toolchain/runtime; acceleration adds the CUDA toolkit, runtime, driver, and cuBLAS | Keep dependencies explicit and bounded; do not describe this as "no supply chain." |
 | Every op has its gradient beside it | Enforced coding rule; 80 tests | — |
 | Exact resume from a v3 checkpoint | Decided (Phase 1); not yet built | Do not claim until Phase 1 ships; v2 files load weights only. |
-| Independently usable modality packages | `ovg_lm` exists; `ovg_vision` Phase 2; `ovg_diffusion` Phase 3 | One of three today. |
+| Independently usable modality packages | `ovg_lm` exists; `ovg_vision` Phase 2; `ovg_diffusion` Phase 3b | One of three today. |
 | Proven by real applications | `lambda` (GPT) and `vexilloscope` (ViT) both build; vexilloscope needs a retrain | Image generation has no application yet. |
 | Trains on a single consumer GPU | RTX 4070 Super, 12 GB, is the reference machine | Yes for focused models; see below. |
 
@@ -212,7 +212,8 @@ Scope: the training harness (optimizer state as a struct, LR schedules, gradient
 
 ```text
 SPEC_PLATFORM_PHASE2_VISION.md       # TgLinear fix + rename; new ovg_vision target with TgPatchEmbed + pooling; vexilloscope adopts both
-SPEC_PLATFORM_PHASE3_CONV.md         # iterative topo_sort + growable graph; conv2d, group_norm, silu, upsample2d, sinusoidal embedding; new ovg_diffusion target (UNet, schedule, sampler) — driven by a first DDPM
+SPEC_PLATFORM_PHASE3A_CONV.md        # iterative topo_sort + growable graph; conv2d, group_norm, silu, upsample2d, sinusoidal embedding; conv residual/down/up blocks in ovg_nn — sized by the DDPM sketch
+SPEC_PLATFORM_PHASE3B_DIFFUSION.md   # new ovg_diffusion target (UNet assembly, noise schedule, sampler); the first DDPM trains and samples recognizably
 SPEC_PLATFORM_PHASE4_PACKAGES.md     # namespaced includes, extraction readiness
 ```
 
@@ -231,9 +232,9 @@ Names and boundaries may shift; the principle should not: spec only the next imp
 | Bare vs. namespaced includes | Closed (deferred) | Stay bare until a package is about to be published separately; then switch in one commit, verifiable by zero `C1083` across consumers. |
 | Training harness placement | Closed | In `ovg_core`, finishing `tg_train.h`. Exact-resume is default on: checkpoints save optimizer state, step, and RNG state; load takes an explicit mode (resume, or init-from-weights for warm starts); parameter-only v2 files still load with moments zeroed and step reset. |
 | `TgLinear` fate | Closed | Fix in place and rename to `tg_linear.h`: bias `[1, n_out]` expanded at forward, no baked-in batch, no out-parameter. |
-| Conv family scope | Closed | Driven by a first concrete DDPM (~32×32 RGB, small UNet, one attention level). First `conv2d` is im2col + cuBLAS GEMM, no cuDNN. `group_norm` is a separate op; `layer_norm` untouched. `ovg_diffusion` (UNet assembly, schedule, sampler) is created in Phase 3 so the DDPM can be trained and sampled. |
+| Conv family scope | Closed | Driven by a first concrete DDPM (~32×32 RGB, small UNet, one attention level). First `conv2d` is im2col + cuBLAS GEMM, no cuDNN. `group_norm` is a separate op; `layer_norm` untouched. `ovg_diffusion` (UNet assembly, schedule, sampler) is created in Phase 3b so the DDPM can be trained and sampled; Phase 3a is the graph change, the ops, and the conv blocks. |
 | Vision-block placement | Closed | Create `ovg_vision` now (Phase 2). Further vision consumers are imminent, which satisfies the second-consumer rule ahead of time. |
-| Graph and dimension limits | Closed | `TG_MAX_DIMS` stays 4 — no plans need more. `topo_sort` goes iterative with growable graph capacity as a Phase 3 prerequisite. |
+| Graph and dimension limits | Closed | `TG_MAX_DIMS` stays 4 — no plans need more. `topo_sort` goes iterative with growable graph capacity as a Phase 3a prerequisite. |
 
 ---
 
@@ -372,7 +373,7 @@ These are model-agnostic — any ViT, and later the encoder side of a latent dif
 ### Non-Goals
 
 - Image decoding, letterboxing, augmentation.
-- Convolutional patch embedding (that is Phase 3 territory).
+- Convolutional patch embedding (that is Phase 3a territory).
 
 ### Options
 
@@ -458,6 +459,8 @@ Pick a small DDPM (e.g. 32×32, 3 channels, a handful of residual blocks, one at
 
 Closed (2026-09-20): **Option B — driven by a first concrete model.** The Phase 3 spec names a small DDPM (about 32×32 RGB, a few residual blocks, one attention level over flattened spatial positions) and builds exactly the ops it needs — expected: `conv2d` (also used strided for downsampling), `group_norm`, `silu`, nearest `upsample2d`, sinusoidal timestep embedding. `conv_transpose2d` and `max_pool2d` are not built until a model calls for them. The completion signal is that the model trains and sampling from noise produces recognizable images, not that op tests pass in isolation. The `topo_sort` / graph-capacity change is a prerequisite of the same phase. Because the signal requires a schedule and a sampler, **`ovg_diffusion` is created in Phase 3**, holding the UNet assembly, the noise schedule, and the sampler; the conv blocks below it go in `ovg_nn`. Phase 4 is then namespaced includes and extraction readiness only.
 
+Phase 3 is specified as two slices so that each stays implementable on its own: **3a** — the iterative `topo_sort` and growable graph, the ops listed above, and the conv residual/down/up blocks in `ovg_nn`, with the op set fixed by a sketch of the 3b model and a completion signal of "op tests pass, the blocks build, and a UNet-shaped graph exceeds the old 8192-node cap without fataling"; **3b** — the `ovg_diffusion` target and the DDPM itself, carrying the recognizable-samples signal. The sketch is written first, as part of 3a's spec, so 3a builds nothing 3b does not use.
+
 Two implementation choices are fixed here so the spec does not reopen them:
 
 - **`conv2d` is im2col + cuBLAS GEMM.** It rides on `tg_matmul`, the best-tested path in the library, and adds no dependency. A direct kernel is a permitted later replacement behind the same `tg_conv2d` signature if a profile shows conv dominating; cuDNN is not.
@@ -495,7 +498,7 @@ They have been invisible because every model so far is a modest transformer. The
 
 ### Decision
 
-Closed (2026-09-20): **keep `TG_MAX_DIMS = 4`** — the owner has no plans that need a fifth dimension, and spatial attention in a UNet is handled by reshape. **`topo_sort` becomes iterative with a growable node list** as a Phase 3 prerequisite, so a UNet's depth is never bounded by a compile-time constant. Raising `TG_MAX_DIMS` is off the table until a concrete 5D need appears.
+Closed (2026-09-20): **keep `TG_MAX_DIMS = 4`** — the owner has no plans that need a fifth dimension, and spatial attention in a UNet is handled by reshape. **`topo_sort` becomes iterative with a growable node list** as a Phase 3a prerequisite, so a UNet's depth is never bounded by a compile-time constant. Raising `TG_MAX_DIMS` is off the table until a concrete 5D need appears.
 
 ---
 
