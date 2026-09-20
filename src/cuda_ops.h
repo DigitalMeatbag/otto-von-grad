@@ -50,11 +50,6 @@ void cuda_gelu_fwd(const float *a, float *out, int n);
 void cuda_gelu_bwd(const float *a, const float *g, float *da, int n);
 
 // ── Transpose ────────────────────────────────────────────────────────────────
-
-void cuda_transpose_fwd(const float *a, float *out, int rows, int cols);
-// da += transpose(g); accumulates into da (does not overwrite)
-void cuda_transpose_bwd(const float *g, float *da, int out_rows, int out_cols);
-
 // General N-D transpose: swap axes dim0/dim1 for any ndim ≤ 4.
 // s0..s3 are the shape of the SOURCE tensor (a for fwd, self for bwd);
 // unused slots (ndim < 4) should be passed as 1.
@@ -99,42 +94,6 @@ void cuda_layer_norm_rows_affine_bwd(const float *xhat, const float *dy,
 // causal mask: [T×T] — writes -1e9 to future (j>i) positions
 void cuda_causal_mask_fwd(const float *a, float *out, int seq_len);
 void cuda_causal_mask_bwd(const float *g, float *da, int seq_len);
-
-// slice_cols: a[rows × a_cols] → out[rows × out_cols] starting at col_start
-void cuda_slice_cols_fwd(const float *a, float *out,
-                         int rows, int a_cols, int col_start, int out_cols);
-void cuda_slice_cols_bwd(const float *g, float *da,
-                         int rows, int a_cols, int col_start, int out_cols);
-
-// concat_cols (one part at a time): copy src[rows × src_cols] into
-//   dst[rows × total_cols] at column offset col_offset.
-void cuda_concat_cols_fwd(const float *src, float *dst,
-                          int rows, int src_cols, int total_cols, int col_offset);
-void cuda_concat_cols_bwd(const float *g, float *da,
-                          int rows, int src_cols, int total_cols, int col_offset);
-
-// slice_rows: a[a_rows × cols] → out[out_rows × cols] starting at row_start
-void cuda_slice_rows_fwd(const float *a, float *out,
-                         int a_rows, int cols, int row_start, int out_rows);
-void cuda_slice_rows_bwd(const float *g, float *da,
-                         int a_rows, int cols, int row_start, int out_rows);
-
-// concat_rows (one part at a time): copy src[src_rows × cols] into
-//   dst[total_rows × cols] at row offset row_offset.
-void cuda_concat_rows_fwd(const float *src, float *dst,
-                          int src_rows, int cols, int total_rows, int row_offset);
-void cuda_concat_rows_bwd(const float *g, float *da,
-                          int src_rows, int cols, int total_rows, int row_offset);
-
-// repeat_rows: a[1 × cols] → out[n_rows × cols]
-// Backward sums output grad rows into da[1 × cols] via atomicAdd.
-void cuda_repeat_rows_fwd(const float *a, float *out, int n_rows, int cols);
-void cuda_repeat_rows_bwd(const float *g, float *da, int n_rows, int cols);
-
-// repeat_cols: a[rows × 1] → out[rows × n_cols]
-// Backward sums output grad cols into da[rows × 1] via atomicAdd.
-void cuda_repeat_cols_fwd(const float *a, float *out, int rows, int n_cols);
-void cuda_repeat_cols_bwd(const float *g, float *da, int rows, int n_cols);
 
 // cross_entropy: logits[R×C] + targets[R×C] → probs_cache[R×C], loss_out[1]
 // loss_out must be zero-initialised.  After call, copy loss_out to host.
@@ -222,7 +181,6 @@ void cuda_adam_step(float *param, float *m, float *v, const float *grad,
                     int n, float lr, float bc1, float bc2,
                     float beta1, float beta2, float eps);
 void cuda_grad_sumsq(const float *grad, float *sum_out, int n);
-void cuda_scale_grad(float *grad, float scale, int n);
 void cuda_clip_scale_grad(const float *gpu_sumsq, float max_norm, float eps,
                            float *grad, int n);
 

@@ -443,34 +443,6 @@ void cuda_gelu_bwd(const float *a, const float *g, float *da, int n) {
     CUDA_CHECK(cudaGetLastError());
 }
 
-// ── Transpose ────────────────────────────────────────────────────────────────
-
-__global__ void transpose_k(const float *a, float *o, int rows, int cols) {
-    // Use blockDim (not BLOCK) — this kernel launches with dim3(16,16), not BLOCK threads.
-    int i = blockIdx.y * blockDim.y + threadIdx.y;
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < rows && j < cols) o[j * rows + i] = a[i * cols + j];
-}
-
-__global__ void transpose_bwd_k(const float *g, float *da, int rows, int cols) {
-    int i = blockIdx.y * blockDim.y + threadIdx.y;
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < rows && j < cols) da[j * rows + i] += g[i * cols + j];
-}
-
-void cuda_transpose_fwd(const float *a, float *o, int rows, int cols) {
-    dim3 blk(16, 16);
-    dim3 grd((cols+15)/16, (rows+15)/16);
-    transpose_k<<<grd,blk>>>(a, o, rows, cols);
-    CUDA_CHECK(cudaGetLastError());
-}
-void cuda_transpose_bwd(const float *g, float *da, int out_rows, int out_cols) {
-    dim3 blk(16, 16);
-    dim3 grd((out_cols+15)/16, (out_rows+15)/16);
-    transpose_bwd_k<<<grd,blk>>>(g, da, out_rows, out_cols);
-    CUDA_CHECK(cudaGetLastError());
-}
-
 // ── General N-D transpose (any ndim ≤ 4, any two axes) ───────────────────────
 // Forward: iterate over input elements; map in_idx → out_idx via axis swap.
 // Backward: iterate over output-grad elements; map out_idx → in_idx via axis swap
@@ -801,168 +773,6 @@ void cuda_causal_mask_bwd(const float *g, float *da, int T) {
     CUDA_CHECK(cudaGetLastError());
 }
 
-// slice_cols: extract columns [col_start, col_start+out_cols) from a
-__global__ void slice_cols_fwd_k(const float *a, float *out,
-                                  int rows, int a_cols, int col_start, int out_cols) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= rows * out_cols) return;
-    int i = idx / out_cols, j = idx % out_cols;
-    out[i * out_cols + j] = a[i * a_cols + col_start + j];
-}
-__global__ void slice_cols_bwd_k(const float *g, float *da,
-                                  int rows, int a_cols, int col_start, int out_cols) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= rows * out_cols) return;
-    int i = idx / out_cols, j = idx % out_cols;
-    atomicAdd(&da[i * a_cols + col_start + j], g[i * out_cols + j]);
-}
-
-void cuda_slice_cols_fwd(const float *a, float *out,
-                         int rows, int a_cols, int col_start, int out_cols) {
-    int n = rows * out_cols;
-    slice_cols_fwd_k<<<blocks(n),BLOCK>>>(a, out, rows, a_cols, col_start, out_cols);
-    CUDA_CHECK(cudaGetLastError());
-}
-void cuda_slice_cols_bwd(const float *g, float *da,
-                         int rows, int a_cols, int col_start, int out_cols) {
-    int n = rows * out_cols;
-    slice_cols_bwd_k<<<blocks(n),BLOCK>>>(g, da, rows, a_cols, col_start, out_cols);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-// concat_cols: copy one part into the concatenated buffer
-__global__ void concat_fwd_k(const float *src, float *dst,
-                              int rows, int src_cols, int total_cols, int col_off) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= rows * src_cols) return;
-    int i = idx / src_cols, j = idx % src_cols;
-    dst[i * total_cols + col_off + j] = src[i * src_cols + j];
-}
-__global__ void concat_bwd_k(const float *g, float *da,
-                              int rows, int src_cols, int total_cols, int col_off) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= rows * src_cols) return;
-    int i = idx / src_cols, j = idx % src_cols;
-    atomicAdd(&da[i * src_cols + j], g[i * total_cols + col_off + j]);
-}
-
-void cuda_concat_cols_fwd(const float *src, float *dst,
-                          int rows, int src_cols, int total_cols, int col_offset) {
-    int n = rows * src_cols;
-    concat_fwd_k<<<blocks(n),BLOCK>>>(src, dst, rows, src_cols, total_cols, col_offset);
-    CUDA_CHECK(cudaGetLastError());
-}
-void cuda_concat_cols_bwd(const float *g, float *da,
-                          int rows, int src_cols, int total_cols, int col_offset) {
-    int n = rows * src_cols;
-    concat_bwd_k<<<blocks(n),BLOCK>>>(g, da, rows, src_cols, total_cols, col_offset);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-// slice_rows: extract rows [row_start, row_start+out_rows) from a
-__global__ void slice_rows_fwd_k(const float *a, float *out,
-                                  int a_rows, int cols, int row_start, int out_rows) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= out_rows * cols) return;
-    int i = idx / cols, j = idx % cols;
-    out[i * cols + j] = a[(row_start + i) * cols + j];
-}
-__global__ void slice_rows_bwd_k(const float *g, float *da,
-                                  int a_rows, int cols, int row_start, int out_rows) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= out_rows * cols) return;
-    int i = idx / cols, j = idx % cols;
-    atomicAdd(&da[(row_start + i) * cols + j], g[i * cols + j]);
-}
-
-void cuda_slice_rows_fwd(const float *a, float *out,
-                         int a_rows, int cols, int row_start, int out_rows) {
-    int n = out_rows * cols;
-    slice_rows_fwd_k<<<blocks(n),BLOCK>>>(a, out, a_rows, cols, row_start, out_rows);
-    CUDA_CHECK(cudaGetLastError());
-}
-void cuda_slice_rows_bwd(const float *g, float *da,
-                         int a_rows, int cols, int row_start, int out_rows) {
-    int n = out_rows * cols;
-    slice_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, a_rows, cols, row_start, out_rows);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-// concat_rows: copy one part into the concatenated row buffer
-__global__ void concat_rows_fwd_k(const float *src, float *dst,
-                                   int src_rows, int cols, int total_rows, int row_off) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= src_rows * cols) return;
-    int i = idx / cols, j = idx % cols;
-    dst[(row_off + i) * cols + j] = src[i * cols + j];
-}
-__global__ void concat_rows_bwd_k(const float *g, float *da,
-                                   int src_rows, int cols, int total_rows, int row_off) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= src_rows * cols) return;
-    int i = idx / cols, j = idx % cols;
-    atomicAdd(&da[i * cols + j], g[(row_off + i) * cols + j]);
-}
-
-void cuda_concat_rows_fwd(const float *src, float *dst,
-                          int src_rows, int cols, int total_rows, int row_offset) {
-    int n = src_rows * cols;
-    concat_rows_fwd_k<<<blocks(n),BLOCK>>>(src, dst, src_rows, cols, total_rows, row_offset);
-    CUDA_CHECK(cudaGetLastError());
-}
-void cuda_concat_rows_bwd(const float *g, float *da,
-                          int src_rows, int cols, int total_rows, int row_offset) {
-    int n = src_rows * cols;
-    concat_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, src_rows, cols, total_rows, row_offset);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-// repeat_rows: a[1 × cols] → out[n_rows × cols]
-__global__ void repeat_rows_fwd_k(const float *a, float *out, int n_rows, int cols) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= n_rows * cols) return;
-    out[idx] = a[idx % cols];
-}
-__global__ void repeat_rows_bwd_k(const float *g, float *da, int n_rows, int cols) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= n_rows * cols) return;
-    atomicAdd(&da[idx % cols], g[idx]);
-}
-
-void cuda_repeat_rows_fwd(const float *a, float *out, int n_rows, int cols) {
-    int n = n_rows * cols;
-    repeat_rows_fwd_k<<<blocks(n),BLOCK>>>(a, out, n_rows, cols);
-    CUDA_CHECK(cudaGetLastError());
-}
-void cuda_repeat_rows_bwd(const float *g, float *da, int n_rows, int cols) {
-    int n = n_rows * cols;
-    repeat_rows_bwd_k<<<blocks(n),BLOCK>>>(g, da, n_rows, cols);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-// repeat_cols: a[rows × 1] → out[rows × n_cols]
-__global__ void repeat_cols_fwd_k(const float *a, float *out, int rows, int n_cols) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= rows * n_cols) return;
-    out[idx] = a[idx / n_cols];
-}
-__global__ void repeat_cols_bwd_k(const float *g, float *da, int rows, int n_cols) {
-    int idx = blockIdx.x * BLOCK + threadIdx.x;
-    if (idx >= rows * n_cols) return;
-    atomicAdd(&da[idx / n_cols], g[idx]);
-}
-
-void cuda_repeat_cols_fwd(const float *a, float *out, int rows, int n_cols) {
-    int n = rows * n_cols;
-    repeat_cols_fwd_k<<<blocks(n),BLOCK>>>(a, out, rows, n_cols);
-    CUDA_CHECK(cudaGetLastError());
-}
-void cuda_repeat_cols_bwd(const float *g, float *da, int rows, int n_cols) {
-    int n = rows * n_cols;
-    repeat_cols_bwd_k<<<blocks(n),BLOCK>>>(g, da, rows, n_cols);
-    CUDA_CHECK(cudaGetLastError());
-}
-
 // cross_entropy: one block per row — computes softmax, then CE loss
 __global__ void cross_entropy_fwd_k(const float *logits, const float *targets,
                                      float *probs, float *loss_acc,
@@ -1199,11 +1009,6 @@ __global__ void grad_sumsq_k(const float *grad, float *sum_out, int n) {
     if (threadIdx.x == 0) atomicAdd(sum_out, smem[0]);
 }
 
-__global__ void scale_grad_k(float *grad, float scale, int n) {
-    int i = blockIdx.x * BLOCK + threadIdx.x;
-    if (i < n) grad[i] *= scale;
-}
-
 /* Reads sumsq from GPU, computes clip scale, and applies it — no CPU readback needed. */
 __global__ void clip_scale_grad_k(const float *sumsq, float max_norm,
                                    float eps, float *grad, int n) {
@@ -1215,10 +1020,6 @@ __global__ void clip_scale_grad_k(const float *sumsq, float max_norm,
 
 void cuda_grad_sumsq(const float *grad, float *sum_out, int n) {
     grad_sumsq_k<<<blocks(n),BLOCK>>>(grad, sum_out, n);
-    CUDA_CHECK(cudaGetLastError());
-}
-void cuda_scale_grad(float *grad, float scale, int n) {
-    scale_grad_k<<<blocks(n),BLOCK>>>(grad, scale, n);
     CUDA_CHECK(cudaGetLastError());
 }
 void cuda_clip_scale_grad(const float *gpu_sumsq, float max_norm, float eps,
