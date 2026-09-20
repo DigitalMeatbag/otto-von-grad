@@ -6,7 +6,7 @@ A lightweight tensor autograd engine and neural-network toolkit written in C (C1
 
 Optional CUDA acceleration via `OVG_CUDA=ON`.
 
-This repo is a **library**, built as three layered CMake targets (`ovg_core` → `ovg_nn` → `ovg_lm`, see [Library Layers](#library-layers)). It is consumed by sibling repos checked out next to it (`../vexilloscope`, a ViT classifier; `../lambda`, a lambda-calculus GPT curriculum) via `add_subdirectory(../otto-von-grad)` and `target_link_libraries(... ottovongrad)`. Application code, experiments, and corpora belong in those repos, not here. The only application here is `src/main.c`, the candide.txt GPT demo that doubles as the end-to-end smoke test.
+This repo is a **library**, built as three layered CMake targets (`ovg_core` → `ovg_nn` → `ovg_lm`, see [Library Layers](#library-layers)). It is consumed by sibling repos checked out next to it (`../vexilloscope`, a ViT classifier; `../lambda`, a lambda-calculus GPT curriculum) via `add_subdirectory(../otto-von-grad)` and `target_link_libraries(... ottovongrad)`. Application code, experiments, and corpora belong in those repos, not here. The only application here is `examples/candide.c`, the candide.txt GPT demo that doubles as the end-to-end smoke test.
 
 ---
 
@@ -52,8 +52,10 @@ otto-von-grad/
     tg_gpt.c                        — embeddings + transformer + output projection
     tg_tokenizer.c                  — character-level byte vocabulary
     tg_sample.c                     — sampling + generation loop
-    [app]
-    main.c                          — GPT training demo (candide.txt); saves/resumes checkpoints; links ovg_lm
+  examples/
+    candide.c                       — GPT training demo; links ovg_lm; saves/resumes checkpoints; builds as `candide`
+    data/candide.txt                — corpus for the demo
+    data/checkpoints/model.bin      — saved after each demo run (gitignored)
   tests/
     ovg_test.h                      — minimal test assertion macros
     test_ops.c                      — ops forward + backward correctness, BF16, N-D matmul
@@ -67,11 +69,6 @@ otto-von-grad/
   legacy/
     value.c / value.h               — scalar autograd (learning exercise, not compiled)
     mlp.c / mlp.h                   — scalar MLP (learning exercise, not compiled)
-  data/
-    text/
-      candide.txt                   — corpus for GPT character-level demo
-    checkpoints/
-      model.bin                     — saved after each training run (gitignored)
 ```
 
 ---
@@ -368,7 +365,7 @@ Default preset: VS2026, CUDA enabled, Release mode, all outputs flattened into `
 ```powershell
 cmake --preset default             # configure (fresh clone, after deleting build/, or after CMakeLists changes)
 cmake --build --preset default     # every subsequent build
-.\build\otto_von_grad.exe          # GPT demo (trains on candide.txt); does not run tests
+.\build\candide.exe                # GPT demo (trains on examples/data/candide.txt); does not run tests
 .\build\otto_von_grad_tests.exe    # test suite — 73 tests, exits 0 on all-pass
 ```
 

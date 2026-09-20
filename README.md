@@ -303,7 +303,8 @@ cmake --preset default
 
 # Every subsequent build
 cmake --build --preset default
-.\build\otto_von_grad.exe
+.\build\candide.exe                # GPT demo
+.\build\otto_von_grad_tests.exe    # test suite
 ```
 
 Non-default presets:
@@ -320,7 +321,7 @@ CMake produces the library as three layered static targets plus an umbrella:
 - `ottovongrad` — INTERFACE target that pulls in all three
 
 and two executables:
-- `otto_von_grad` — GPT character-level demo (candide.txt); reports train/val loss, generates text, saves checkpoint
+- `candide` — GPT character-level demo (`examples/candide.c`, trains on `examples/data/candide.txt`); reports train/val loss, generates text, saves a checkpoint to `examples/data/checkpoints/`
 - `otto_von_grad_tests` — test suite
 
 ---

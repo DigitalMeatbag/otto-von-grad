@@ -1,7 +1,7 @@
 build/
 .claude/
 __pycache__/
-data/checkpoints/
+examples/data/checkpoints/
 *.o
 *.a
 *.so

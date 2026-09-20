@@ -88,8 +88,10 @@ add_library(ottovongrad INTERFACE)
 target_link_libraries(ottovongrad INTERFACE ovg_lm)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    add_executable(otto_von_grad src/main.c)
-    target_link_libraries(otto_von_grad PRIVATE ovg_lm)
+    add_executable(candide examples/candide.c)
+    target_link_libraries(candide PRIVATE ovg_lm)
+    target_compile_definitions(candide PRIVATE
+        OVG_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples")
 
     add_executable(otto_von_grad_tests
         tests/test_main.c

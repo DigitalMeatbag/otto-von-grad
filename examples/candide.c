@@ -19,7 +19,13 @@ static void ensure_dir(const char *path) { mkdir(path, 0755); }
 #include "tg_checkpoint.h"
 #include "tg_rng.h"
 
-#define CHECKPOINT_PATH "data/checkpoints/model.bin"
+/* OVG_EXAMPLES_DIR is set by CMake to this directory, so the demo runs from any CWD. */
+#ifndef OVG_EXAMPLES_DIR
+#  define OVG_EXAMPLES_DIR "examples"
+#endif
+#define CORPUS_PATH      OVG_EXAMPLES_DIR "/data/candide.txt"
+#define CHECKPOINT_DIR   OVG_EXAMPLES_DIR "/data/checkpoints"
+#define CHECKPOINT_PATH  CHECKPOINT_DIR "/model.bin"
 
 static Tensor *make_one_hot(const int *ids, int n, int n_classes) {
     int shape[2] = {n, n_classes};
@@ -58,7 +64,7 @@ int main(void) {
     const int   gen_steps = 200;
 
     int   text_len;
-    char *text      = tg_read_file("data/text/candide.txt", &text_len);
+    char *text      = tg_read_file(CORPUS_PATH, &text_len);
     TgVocab vocab   = tg_vocab_build(text, text_len);
     int *all_tokens = tg_tokenize(text, text_len, &vocab);
 
@@ -85,7 +91,7 @@ int main(void) {
     if (!params) { fprintf(stderr, "out of memory\n"); exit(1); }
     int n_params = tg_gpt_collect_params(&gpt, params, max_params);
 
-    printf("loaded data/text/candide.txt: %d chars\n", text_len);
+    printf("loaded %s: %d chars\n", CORPUS_PATH, text_len);
     printf("vocab size: %d\n", vocab.size);
     printf("params: %d tensors\n", n_params);
     printf("train tokens: %d  val tokens: %d\n", val_start, val_len);
@@ -169,7 +175,7 @@ int main(void) {
     tg_free_graph(eval_loss);
 
     /* Save checkpoint */
-    ensure_dir("data/checkpoints");
+    ensure_dir(CHECKPOINT_DIR);
     if (tg_checkpoint_save(CHECKPOINT_PATH, params, n_params) == 0)
         printf("[ovg] checkpoint saved to %s\n", CHECKPOINT_PATH);
 
