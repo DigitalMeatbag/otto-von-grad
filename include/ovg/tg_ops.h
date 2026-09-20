@@ -26,10 +26,11 @@ Tensor *tg_cross_entropy_sparse_no_sync(Tensor *logits, const int *class_ids, in
 Tensor *tg_dropout(Tensor *a, float p);
 Tensor *tg_embed(Tensor *weight, const int *token_ids, int seq_len);
 
-/* v2 new ops (implemented in Phase 2+) */
+/* shape / precision */
 Tensor *tg_reshape(Tensor *a, int ndim, const int shape[]);
 Tensor *tg_expand_dim(Tensor *a, int axis, int n);
 Tensor *tg_cast(Tensor *a, TgDtype dtype);
 Tensor *tg_slice(Tensor *a, int axis, int start, int len);
+Tensor *tg_concat(Tensor *a, Tensor *b, int axis);
 
 #endif

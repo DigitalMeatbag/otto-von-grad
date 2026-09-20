@@ -204,6 +204,17 @@ void cuda_slice_fwd(const float *a, float *out,
 void cuda_slice_bwd(const float *g, float *da,
                     int outer, int a_axis, int inner, int start, int len);
 
+// ── Concat along an axis ──────────────────────────────────────────────────────
+// Layout: [outer][out_axis][inner] for out/g; [outer][len][inner] for a/da.
+// Forward:  out[o, off:off+len, :] = a          (each element written once)
+// Backward: da += g[o, off:off+len, :]           (each element touched once, no atomics)
+// Called once per concatenated input with its offset along the axis.
+
+void cuda_concat_fwd(const float *a, float *out,
+                     int outer, int out_axis, int inner, int off, int len);
+void cuda_concat_bwd(const float *g, float *da,
+                     int outer, int out_axis, int inner, int off, int len);
+
 // ── Adam optimizer step ───────────────────────────────────────────────────────
 // Updates param in-place using m, v moment buffers (all on device).
 

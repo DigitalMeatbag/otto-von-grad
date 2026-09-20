@@ -142,6 +142,7 @@ All ops in `src/tg_ops.c` / `include/ovg/tg_ops.h`. Every op has a paired `_back
 * `tg_reshape(a, ndim, shape)` — same numel, new shape; ndim ≥ 2; fatal if element count mismatches
 * `tg_expand_dim(a, axis, n)` — shape[axis] must be 1; tiles n times; backward sums over axis
 * `tg_slice(a, axis, start, len)` — contiguous slice; backward scatters gradient back
+* `tg_concat(a, b, axis)` — join two tensors along `axis`; all other dims must match exactly; F32 only; backward slices the gradient to each parent (inverse of `tg_slice`)
 * `tg_transpose(a, dim0, dim1)` — swap any two axes; works for any ndim
 
 ### Arithmetic
@@ -364,7 +365,7 @@ Default preset: VS2026, CUDA enabled, Release mode, all outputs flattened into `
 cmake --preset default             # configure (fresh clone, after deleting build/, or after CMakeLists changes)
 cmake --build --preset default     # every subsequent build
 .\build\candide.exe                # GPT demo (trains on examples/data/candide.txt); does not run tests
-.\build\otto_von_grad_tests.exe    # test suite — 73 tests, exits 0 on all-pass
+.\build\otto_von_grad_tests.exe    # test suite — 80 tests, exits 0 on all-pass
 ```
 
 Non-default presets:
@@ -380,7 +381,7 @@ After any code change, build and run the test binary before declaring the work d
 
 ```powershell
 cmake --build --preset default
-.\build\otto_von_grad_tests.exe    # expect "73 passed, 0 failed"
+.\build\otto_von_grad_tests.exe    # expect "80 passed, 0 failed"
 ```
 
 Docs-only changes are exempt. After a CMake change, also confirm each layer still builds on its own (`cmake --build --preset default --target ovg_core`, then `ovg_nn`, then `ovg_lm`) and that `../lambda` configures and builds with no edits to its own CMakeLists. For CUDA-specific changes, the default (CUDA) preset is the one that matters — the CPU preset will not exercise the kernels. Tests guarded by `#ifdef OVG_CUDA_ENABLED` are skipped in CPU-only builds.

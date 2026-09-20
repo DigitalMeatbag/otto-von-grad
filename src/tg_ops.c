@@ -1308,3 +1308,85 @@ Tensor *tg_slice(Tensor *a, int axis, int start, int len) {
                 od[(o * len + i) * inner + s] = ad[(o * a_axis + (start + i)) * inner + s];
     return out;
 }
+
+// ── tg_concat ────────────────────────────────────────────────────────────────
+// Inverse of tg_slice: out[..., 0:A, ...] = a, out[..., A:A+B, ...] = b along `axis`.
+// Backward slices the incoming gradient back to each parent.
+
+static void backward_concat(Tensor *self) {
+    Tensor *a  = self->parents[0];
+    Tensor *b  = self->parents[1];
+    int axis   = (int)self->cache[0];
+    int ndim   = self->ndim;
+    int outer = 1, inner = 1;
+    for (int i = 0; i < axis; i++) outer *= self->shape[i];
+    for (int i = axis + 1; i < ndim; i++) inner *= self->shape[i];
+    int out_axis = self->shape[axis];
+    int a_axis   = a->shape[axis];
+    int b_axis   = b->shape[axis];
+
+#ifdef OVG_CUDA_ENABLED
+    if (self->on_cuda) {
+        cuda_concat_bwd(self->cuda_grad, a->cuda_grad, outer, out_axis, inner, 0,      a_axis);
+        cuda_concat_bwd(self->cuda_grad, b->cuda_grad, outer, out_axis, inner, a_axis, b_axis);
+        return;
+    }
+#endif
+    for (int o = 0; o < outer; o++) {
+        for (int i = 0; i < a_axis; i++)
+            for (int s = 0; s < inner; s++)
+                a->grad[(o * a_axis + i) * inner + s] +=
+                    self->grad[(o * out_axis + i) * inner + s];
+        for (int i = 0; i < b_axis; i++)
+            for (int s = 0; s < inner; s++)
+                b->grad[(o * b_axis + i) * inner + s] +=
+                    self->grad[(o * out_axis + a_axis + i) * inner + s];
+    }
+}
+
+Tensor *tg_concat(Tensor *a, Tensor *b, int axis) {
+    if (a->ndim != b->ndim)
+        ovg_fatal("tg_concat: ndim mismatch (%d vs %d)", a->ndim, b->ndim);
+    if (axis < 0 || axis >= a->ndim)
+        ovg_fatal("tg_concat: axis=%d out of range for ndim=%d", axis, a->ndim);
+    for (int i = 0; i < a->ndim; i++)
+        if (i != axis && a->shape[i] != b->shape[i])
+            ovg_fatal("tg_concat: shape mismatch on dim %d (%d vs %d); only axis %d may differ",
+                      i, a->shape[i], b->shape[i], axis);
+    if (a->dtype != TG_DTYPE_F32 || b->dtype != TG_DTYPE_F32)
+        ovg_fatal("tg_concat: F32 only; cast BF16 inputs first");
+
+    int out_shape[TG_MAX_DIMS];
+    for (int i = 0; i < a->ndim; i++) out_shape[i] = a->shape[i];
+    out_shape[axis] = a->shape[axis] + b->shape[axis];
+
+    Tensor *out = make_op(a->ndim, out_shape, a, b, backward_concat);
+    out->cache = malloc(sizeof(float));
+    if (!out->cache) ovg_fatal("tg_concat: out of memory");
+    out->cache[0] = (float)axis;
+
+    int outer = 1, inner = 1;
+    for (int i = 0; i < axis; i++) outer *= a->shape[i];
+    for (int i = axis + 1; i < a->ndim; i++) inner *= a->shape[i];
+    int out_axis = out_shape[axis];
+    int a_axis   = a->shape[axis];
+    int b_axis   = b->shape[axis];
+
+#ifdef OVG_CUDA_ENABLED
+    if (out->on_cuda) {
+        cuda_concat_fwd(a->cuda_data, out->cuda_data, outer, out_axis, inner, 0,      a_axis);
+        cuda_concat_fwd(b->cuda_data, out->cuda_data, outer, out_axis, inner, a_axis, b_axis);
+        return out;
+    }
+#endif
+    float *ad = TG_DATAF(a), *bd = TG_DATAF(b), *od = TG_DATAF(out);
+    for (int o = 0; o < outer; o++) {
+        for (int i = 0; i < a_axis; i++)
+            for (int s = 0; s < inner; s++)
+                od[(o * out_axis + i) * inner + s] = ad[(o * a_axis + i) * inner + s];
+        for (int i = 0; i < b_axis; i++)
+            for (int s = 0; s < inner; s++)
+                od[(o * out_axis + a_axis + i) * inner + s] = bd[(o * b_axis + i) * inner + s];
+    }
+    return out;
+}

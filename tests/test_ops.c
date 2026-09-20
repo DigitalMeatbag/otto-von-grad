@@ -1166,6 +1166,184 @@ static void test_slice_3d(void) {
     tg_free(a);
 }
 
+/* ── tg_concat ───────────────────────────────────────────────────────────── */
+
+static void test_concat_axis0(void) {
+    /* [1x3] ++ [2x3] along axis 0 → [3x3]: the ViT "prepend CLS token" case */
+    Tensor *a = tg_new(2, (int[]){1, 3});
+    Tensor *b = tg_new(2, (int[]){2, 3});
+    Tensor *w = tg_new(2, (int[]){3, 3});
+    a->persistent = b->persistent = w->persistent = 1;
+    float *ad = TG_DATAF(a), *bd = TG_DATAF(b), *wd = TG_DATAF(w);
+    for (int i = 0; i < 3; i++) ad[i] = 10.0f + (float)i;
+    for (int i = 0; i < 6; i++) bd[i] = 20.0f + (float)i;
+    for (int i = 0; i < 9; i++) wd[i] = (float)(i + 1);
+
+    Tensor *out = tg_concat(a, b, 0);
+    OVG_CHECK_SHAPE(out, 3, 3);
+
+    float *od = TG_DATAF(out);
+    for (int i = 0; i < 3; i++) OVG_CHECK_NEAR(od[i],     10.0f + (float)i, 1e-5f);
+    for (int i = 0; i < 6; i++) OVG_CHECK_NEAR(od[3 + i], 20.0f + (float)i, 1e-5f);
+
+    /* Weighted loss so each parent's grad is a distinct row block of w */
+    Tensor *loss = tg_sum(tg_mul(out, w));
+    tg_backward(loss);
+    for (int i = 0; i < 3; i++) OVG_CHECK_NEAR(a->grad[i], wd[i],     1e-5f);
+    for (int i = 0; i < 6; i++) OVG_CHECK_NEAR(b->grad[i], wd[3 + i], 1e-5f);
+
+    tg_free_graph(loss);
+    a->persistent = b->persistent = w->persistent = 0;
+    tg_free(a); tg_free(b); tg_free(w);
+}
+
+static void test_concat_axis1(void) {
+    /* [2x2] ++ [2x3] along axis 1 → [2x5] */
+    Tensor *a = tg_new(2, (int[]){2, 2});
+    Tensor *b = tg_new(2, (int[]){2, 3});
+    a->persistent = b->persistent = 1;
+    float *ad = TG_DATAF(a), *bd = TG_DATAF(b);
+    for (int i = 0; i < 4; i++) ad[i] = (float)i;         /* [[0,1],[2,3]] */
+    for (int i = 0; i < 6; i++) bd[i] = 10.0f + (float)i; /* [[10,11,12],[13,14,15]] */
+
+    Tensor *out = tg_concat(a, b, 1);
+    OVG_CHECK_SHAPE(out, 2, 5);
+
+    float *od = TG_DATAF(out);
+    float expect[10] = {0, 1, 10, 11, 12,  2, 3, 13, 14, 15};
+    for (int i = 0; i < 10; i++) OVG_CHECK_NEAR(od[i], expect[i], 1e-5f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+    for (int i = 0; i < 4; i++) OVG_CHECK_NEAR(a->grad[i], 1.0f, 1e-5f);
+    for (int i = 0; i < 6; i++) OVG_CHECK_NEAR(b->grad[i], 1.0f, 1e-5f);
+
+    tg_free_graph(loss);
+    a->persistent = b->persistent = 0;
+    tg_free(a); tg_free(b);
+}
+
+static void test_concat_3d(void) {
+    /* [2x1x3] ++ [2x2x3] along axis 1 → [2x3x3]: batched CLS prepend */
+    Tensor *a = tg_new(3, (int[]){2, 1, 3});
+    Tensor *b = tg_new(3, (int[]){2, 2, 3});
+    a->persistent = b->persistent = 1;
+    float *ad = TG_DATAF(a), *bd = TG_DATAF(b);
+    for (int i = 0; i < 6;  i++) ad[i] = 100.0f + (float)i;
+    for (int i = 0; i < 12; i++) bd[i] = (float)i;
+
+    Tensor *out = tg_concat(a, b, 1);
+    OVG_CHECK_SHAPE_ND(out, 3, 2, 3, 3);
+
+    float *od = TG_DATAF(out);
+    /* batch 0: row 0 = a[0], rows 1-2 = b[0] */
+    OVG_CHECK_NEAR(od[0], 100.0f, 1e-5f);
+    OVG_CHECK_NEAR(od[2], 102.0f, 1e-5f);
+    OVG_CHECK_NEAR(od[3], 0.0f,   1e-5f);
+    OVG_CHECK_NEAR(od[8], 5.0f,   1e-5f);
+    /* batch 1: row 0 = a[1], rows 1-2 = b[1] */
+    OVG_CHECK_NEAR(od[9],  103.0f, 1e-5f);
+    OVG_CHECK_NEAR(od[12], 6.0f,   1e-5f);
+    OVG_CHECK_NEAR(od[17], 11.0f,  1e-5f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+    for (int i = 0; i < 6;  i++) OVG_CHECK_NEAR(a->grad[i], 1.0f, 1e-5f);
+    for (int i = 0; i < 12; i++) OVG_CHECK_NEAR(b->grad[i], 1.0f, 1e-5f);
+
+    tg_free_graph(loss);
+    a->persistent = b->persistent = 0;
+    tg_free(a); tg_free(b);
+}
+
+static void test_concat_self_accumulates(void) {
+    /* concat(a, a): the backward must accumulate, giving grad 2 everywhere */
+    Tensor *a = tg_new(2, (int[]){2, 2});
+    a->persistent = 1;
+    tg_fill(a, 1.0f);
+
+    Tensor *out = tg_concat(a, a, 0);
+    OVG_CHECK_SHAPE(out, 4, 2);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+    for (int i = 0; i < 4; i++) OVG_CHECK_NEAR(a->grad[i], 2.0f, 1e-5f);
+
+    tg_free_graph(loss);
+    a->persistent = 0;
+    tg_free(a);
+}
+
+static void test_concat_shape_mismatch(void) {
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *a = tg_new(2, (int[]){2, 3});
+        Tensor *b = tg_new(2, (int[]){2, 4});
+        tg_concat(a, b, 0); /* dim 1 differs but axis is 0 */
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "shape mismatch") != NULL);
+}
+
+static void test_concat_bad_axis(void) {
+    g_last_error[0] = '\0';
+    ovg_set_fatal_handler(capture_handler);
+
+    int triggered = 0;
+    if (setjmp(g_test_escape) == 0) {
+        Tensor *a = tg_new(2, (int[]){2, 3});
+        Tensor *b = tg_new(2, (int[]){2, 3});
+        tg_concat(a, b, 2);
+    } else {
+        triggered = 1;
+    }
+
+    ovg_set_fatal_handler(NULL);
+    OVG_CHECK(triggered);
+    OVG_CHECK(strstr(g_last_error, "out of range") != NULL);
+}
+
+#ifdef OVG_CUDA_ENABLED
+static void test_cuda_concat(void) {
+    /* Same geometry as test_concat_3d, on device; compare values and grads to CPU */
+    Tensor *a = tg_new(3, (int[]){2, 1, 3});
+    Tensor *b = tg_new(3, (int[]){2, 2, 3});
+    a->persistent = b->persistent = 1;
+    float *ad = TG_DATAF(a), *bd = TG_DATAF(b);
+    for (int i = 0; i < 6;  i++) ad[i] = 100.0f + (float)i;
+    for (int i = 0; i < 12; i++) bd[i] = (float)i;
+
+    Tensor *ref = tg_concat(a, b, 1);           /* CPU reference */
+    float *rd = TG_DATAF(ref);
+
+    tg_to_cuda(a); tg_to_cuda(b);
+    Tensor *out = tg_concat(a, b, 1);
+    OVG_CHECK(out->on_cuda);
+    tg_from_cuda(out);
+    float *od = TG_DATAF(out);
+    for (int i = 0; i < 18; i++) OVG_CHECK_NEAR(od[i], rd[i], 1e-6f);
+
+    Tensor *loss = tg_sum(out);
+    tg_backward(loss);
+    tg_from_cuda(a); tg_from_cuda(b);
+    for (int i = 0; i < 6;  i++) OVG_CHECK_NEAR(a->grad[i], 1.0f, 1e-5f);
+    for (int i = 0; i < 12; i++) OVG_CHECK_NEAR(b->grad[i], 1.0f, 1e-5f);
+
+    tg_free_graph(loss);
+    tg_free(ref);
+    tg_cuda_free(a); tg_cuda_free(b);
+    a->persistent = b->persistent = 0;
+    tg_free(a); tg_free(b);
+}
+#endif
+
 /* ── Suite entry point ───────────────────────────────────────────────────── */
 
 void run_ops_tests(int *passed, int *failed) {
@@ -1208,10 +1386,17 @@ void run_ops_tests(int *passed, int *failed) {
     RUN_TEST(test_dropout_grad,                   passed, failed);
     RUN_TEST(test_layer_norm_backward_finite_diff, passed, failed);
     RUN_TEST(test_slice_3d,                       passed, failed);
+    RUN_TEST(test_concat_axis0,                   passed, failed);
+    RUN_TEST(test_concat_axis1,                   passed, failed);
+    RUN_TEST(test_concat_3d,                      passed, failed);
+    RUN_TEST(test_concat_self_accumulates,        passed, failed);
+    RUN_TEST(test_concat_shape_mismatch,          passed, failed);
+    RUN_TEST(test_concat_bad_axis,                passed, failed);
 #ifdef OVG_CUDA_ENABLED
     RUN_TEST(test_cuda_cast_bf16_roundtrip, passed, failed);
     RUN_TEST(test_cuda_bf16_matmul,         passed, failed);
     RUN_TEST(test_cuda_new_ops,        passed, failed);
     RUN_TEST(test_cuda_causal_mask_large, passed, failed);
+    RUN_TEST(test_cuda_concat,            passed, failed);
 #endif
 }

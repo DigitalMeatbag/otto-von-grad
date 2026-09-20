@@ -58,7 +58,7 @@ Default preset: Visual Studio 2026, CUDA on, Release, outputs flattened into `bu
 ```powershell
 cmake --preset default             # configure (fresh clone, or after CMakeLists changes)
 cmake --build --preset default     # build everything
-.\build\otto_von_grad_tests.exe    # 73 tests; exits 0 on all-pass
+.\build\otto_von_grad_tests.exe    # 80 tests; exits 0 on all-pass
 .\build\candide.exe                # GPT demo: trains on examples/data/candide.txt, generates text
 ```
 

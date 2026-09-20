@@ -25,7 +25,7 @@ One test file per module, linked against `ovg_lm` so every layer is reachable.
 |---|---|
 | `ovg_test.h` | `OVG_CHECK`, `OVG_CHECK_EQ`, `OVG_CHECK_NEAR`, `OVG_CHECK_SHAPE`, `RUN_TEST` macros |
 | `test_main.c` | Entry point; seeds the RNG, calls every suite's `run_*_tests`, prints the summary |
-| `test_ops.c` | Forward and gradient checks for every op (arithmetic, matmul, reductions, layer_norm, softmax, activations, dropout, embed, cross-entropy dense/sparse/no-sync, reshape, expand_dim, slice); shape-mismatch and out-of-bounds error paths via `setjmp`/`longjmp`; layer_norm finite-difference check; drop-path schedule; CUDA: BF16 cast round-trip and matmul, N-D ops, large causal mask |
+| `test_ops.c` | Forward and gradient checks for every op (arithmetic, matmul, reductions, layer_norm, softmax, activations, dropout, embed, cross-entropy dense/sparse/no-sync, reshape, expand_dim, slice, concat); shape-mismatch and out-of-bounds error paths via `setjmp`/`longjmp`; layer_norm finite-difference check; drop-path schedule; CUDA: BF16 cast round-trip and matmul, N-D ops, large causal mask |
 | `test_train.c` | SGD direction, `tg_backward` grad zeroing, `tg_backward_accum` accumulation, transpose grad accumulation, grad-norm clipping (CPU and CUDA) |
 | `test_attention.c` | Causal attention gradients (single and multi-head), encoder attention weights, batch=1 vs batched parity, lower-ndim matmul broadcast |
 | `test_gpt.c` | `tg_gpt_collect_params` capacity, forward output shape at batch 1 and batch 2 |
@@ -78,4 +78,4 @@ Tensors allocated before `longjmp` will leak — acceptable in test code.
 
 Tests guarded with `#ifdef OVG_CUDA_ENABLED` are compiled and run automatically when the library
 is built with `OVG_CUDA=ON` (the `default` and `debug` presets). They are skipped in the `cpu`
-preset, which is why that build reports 65 tests rather than 73.
+preset, which is why that build reports 71 tests rather than 80.

@@ -1334,4 +1334,39 @@ void cuda_slice_bwd(const float *g, float *da,
     CUDA_CHECK(cudaGetLastError());
 }
 
+__global__ void concat_fwd_k(const float *a, float *out,
+                              int outer, int out_axis, int inner, int off, int len) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= outer * len * inner) return;
+    int o   = idx / (len * inner);
+    int rem = idx % (len * inner);
+    int i   = rem / inner;
+    int s   = rem % inner;
+    out[(o * out_axis + (off + i)) * inner + s] = a[idx];
+}
+
+__global__ void concat_bwd_k(const float *g, float *da,
+                              int outer, int out_axis, int inner, int off, int len) {
+    int idx = blockIdx.x * BLOCK + threadIdx.x;
+    if (idx >= outer * len * inner) return;
+    int o   = idx / (len * inner);
+    int rem = idx % (len * inner);
+    int i   = rem / inner;
+    int s   = rem % inner;
+    da[idx] += g[(o * out_axis + (off + i)) * inner + s];
+}
+
+void cuda_concat_fwd(const float *a, float *out,
+                     int outer, int out_axis, int inner, int off, int len) {
+    int total = outer * len * inner;
+    concat_fwd_k<<<blocks(total),BLOCK>>>(a, out, outer, out_axis, inner, off, len);
+    CUDA_CHECK(cudaGetLastError());
+}
+void cuda_concat_bwd(const float *g, float *da,
+                     int outer, int out_axis, int inner, int off, int len) {
+    int total = outer * len * inner;
+    concat_bwd_k<<<blocks(total),BLOCK>>>(g, da, outer, out_axis, inner, off, len);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 #endif // OVG_CUDA_ENABLED
