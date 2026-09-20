@@ -2,7 +2,6 @@ build/
 .claude/
 __pycache__/
 data/checkpoints/
-data/import/raw/
 *.o
 *.a
 *.so

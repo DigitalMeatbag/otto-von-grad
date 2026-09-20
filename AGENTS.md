@@ -2,11 +2,13 @@
 
 # otto-von-grad
 
-A lightweight tensor autograd engine written in C (C11).
+A lightweight tensor autograd engine written in C (C11). This file is the single source of truth for any coding agent working in this repo (`CLAUDE.md` imports it verbatim).
 
 Implements reverse-mode autodiff, N-D tensors (up to 4D), batched multi-head self-attention, transformer blocks, a GPT-style language model, and optional CUDA acceleration via cuBLAS. No external ML libraries.
 
 Optional CUDA acceleration via `OVG_CUDA=ON`.
+
+This repo is a **library**. It is consumed by sibling repos checked out next to it (`../vexilloscope`, a ViT classifier; `../lambda`, a lambda-calculus GPT curriculum) via `add_subdirectory(../otto-von-grad)` and `target_link_libraries(... ottovongrad)`. Application code, experiments, and corpora belong in those repos, not here. The only application here is `src/main.c`, the candide.txt GPT demo that doubles as the end-to-end smoke test.
 
 ---
 
@@ -312,10 +314,12 @@ Enabled via `OVG_CUDA=ON`. When enabled:
 
 ## Build Commands
 
+Default preset: VS2026, CUDA enabled, Release mode, all outputs flattened into `build\`.
+
 ```powershell
-cmake --preset default             # configure: VS2026, CUDA, Release
-cmake --build --preset default     # build
-.\build\otto_von_grad.exe          # GPT demo (trains on candide.txt)
+cmake --preset default             # configure (fresh clone, after deleting build/, or after CMakeLists changes)
+cmake --build --preset default     # every subsequent build
+.\build\otto_von_grad.exe          # GPT demo (trains on candide.txt); does not run tests
 .\build\otto_von_grad_tests.exe    # test suite — 73 tests, exits 0 on all-pass
 ```
 
@@ -325,6 +329,17 @@ Non-default presets:
 cmake --preset debug   && cmake --build --preset debug   # Debug + CUDA
 cmake --preset cpu     && cmake --build --preset cpu     # Release, no CUDA
 ```
+
+## Verification
+
+After any code change, build and run the test binary before declaring the work done:
+
+```powershell
+cmake --build --preset default
+.\build\otto_von_grad_tests.exe    # expect "73 passed, 0 failed"
+```
+
+Docs-only changes are exempt. For CUDA-specific changes, the default (CUDA) preset is the one that matters — the CPU preset will not exercise the kernels. Tests guarded by `#ifdef OVG_CUDA_ENABLED` are skipped in CPU-only builds.
 
 ---
 
@@ -385,9 +400,19 @@ ovg_set_fatal_handler(my_handler);  // install pre-exit hook (not thread-safe)
 
 ## Important Guidance For Agents
 
+Working style:
+
+* Read nearby code before editing; this project values explicit tensor math and inspectability over clever abstractions.
+* Keep changes narrow and easy to review. Avoid unrelated refactors, formatting churn, or metadata updates.
+* Preserve user work in the git tree. If unrelated files are dirty, leave them alone.
+* New public functions need a prototype in the matching header. Include the narrowest header that provides what you need (see Include Style).
+
 When modifying code:
 
 * Preserve explicit tensor math — do not hide operations behind abstractions.
+* Do not add broadcasting as a convenience fix. If a shape doesn't line up, make it explicit with `tg_reshape` / `tg_expand_dim` at the call site.
+* Do not manually free intermediate graph tensors after a training step; call `tg_free_graph(loss)` and let it handle every non-persistent node.
+* If an op allocates auxiliary data for backward (`cache`), make ownership obvious and verify `tg_free_graph` cleans it up.
 * Preserve the backward function paired with each op in `tg_ops.c`.
 * Do not introduce external ML libraries.
 * Do not add silent broadcasting — it changes semantics for all callers.

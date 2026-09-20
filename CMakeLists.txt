@@ -59,9 +59,6 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_executable(otto_von_grad src/main.c)
     target_link_libraries(otto_von_grad PRIVATE ottovongrad)
 
-    add_executable(otto_lambda src/lambda_main.c)
-    target_link_libraries(otto_lambda PRIVATE ottovongrad)
-
     add_executable(otto_von_grad_tests
         tests/test_main.c
         tests/test_ops.c
