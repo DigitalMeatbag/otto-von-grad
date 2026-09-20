@@ -54,9 +54,9 @@ success metrics by themselves.
 |---|---|---|
 | Complete stack in a few thousand lines | ~7k lines including tests and CUDA kernels | Roughly doubles through Phase 3; re-count before quoting a number. |
 | Small, controlled dependency surface | CPU uses the C toolchain/runtime; acceleration adds the CUDA toolkit, runtime, driver, and cuBLAS | Keep dependencies explicit and bounded; do not describe this as "no supply chain." |
-| Every op has its gradient beside it | Enforced coding rule; 101 tests | — |
+| Every op has its gradient beside it | Enforced coding rule; 120 tests | — |
 | Exact resume from a v3 checkpoint | Built (Phase 1, 2026-09-20): `tg_checkpoint_save_run` / `load_run` carry Adam moments, step, and the RNG word; `test_checkpoint_exact_resume` proves a stopped-and-resumed run matches an uninterrupted one bitwise on CPU | Library randomness only; application-side `rand()` is not restored. v2 files load weights only. |
-| Independently usable modality packages | `ovg_lm` exists; `ovg_vision` Phase 2; `ovg_diffusion` Phase 3b | One of three today. |
+| Independently usable modality packages | `ovg_lm` and `ovg_vision` exist; `ovg_diffusion` Phase 3b | Two of three today. |
 | Proven by real applications | `lambda` (GPT) and `vexilloscope` (ViT) both build; vexilloscope needs a retrain | Image generation has no application yet. |
 | Trains on a single consumer GPU | RTX 4070 Super, 12 GB, is the reference machine | Yes for focused models; see below. |
 
@@ -121,6 +121,7 @@ State as of commit `5f83f16` (the range `93ff570`..`5f83f16`, merged to `master`
   - `vexilloscope` was stuck on the v1 API since the v2 N-D migration (2026-05-28). Its port is committed in that repo (`ef4b230`): a mechanical pass (`->data` → `TG_DATAF`, `->rows/->cols` → `shape[]`, two-int `tg_new` → N-D form), `tg_concat_rows` → `tg_concat`, `tg_row_slice` → `tg_slice` + `tg_reshape` on the now-3D encoder output, `cuda_smoke.c` deleted. It compiles with zero warnings and links `ovg_nn` only. Its v1 weights file cannot load — v1 stored LayerNorm affine and FFN bias parameters pre-tiled to `[seq_len, C]`, v2 stores `[1, C]` — so a retrain is required and is the outstanding item.
 - **Includes remain bare.** The namespaced form (`#include "ovg/tg_ops.h"`, `include/ovg/lm/`) is deferred until a modality package is actually about to be published separately.
 - **Phase 1 (training harness, 2026-09-20, `docs/SPEC_PLATFORM_PHASE1_HARNESS.md`):** `ovg_core` gained `TgAdam` (`tg_optim.h`), `tg_lr_warmup_cosine` / `tg_lr_warmup_linear` (`tg_sched.h`), the eval guard and `TgMeter` (`tg_train.h`), `tg_rng_get_state` / `set_state`, and checkpoint format v3 (`tg_checkpoint_info` / `save_run` / `load_run` with `TG_LOAD_RESUME` / `TG_LOAD_INIT_FROM_WEIGHTS`; v2 files still load weights-only). Tests: 101 (CUDA) / 89 (CPU). All three consumers train through the harness: `candide` and `lambda` resume exactly from periodic `save_run` checkpoints (lambda skips a phase already at its step budget); vexilloscope's `main.c` shrank from 1,294 to 1,257 lines and keeps its own weight format until Phase 2.
+- **Phase 2 (vision, 2026-09-20, `docs/SPEC_PLATFORM_PHASE2_VISION.md`):** `TgLinear` fixed and renamed (`tg_mlp.h` → `tg_linear.h`; bias `[1, n_out]` expanded at forward, no `batch` field, no out-parameter). `ovg_vision` created (`TgPatchEmbed`, `tg_pool_cls`, `tg_pool_mean_tokens`; links `ovg_nn`) and linked by the `ottovongrad` umbrella beside `ovg_lm`. Tests: 120 (CUDA) / 105 (CPU). vexilloscope links `ovg_vision`, dropped `patch_embedding.c` and the `VXWT` format, and trains through `tg_checkpoint_save_run` with auto-resume from `--weights` (`vit.c` 362 → 191 lines; `main.c` 1,257 → 1,335, the resume block being the growth). The retrain that produces the first v3 `vit_weights.bin` is sequenced after that commit.
 
 Known ceilings carried forward from `AGENTS.md`:
 
@@ -347,7 +348,7 @@ Remove `tg_mlp.[ch]`; vexilloscope's classifier does `tg_matmul` + bias expansio
 
 ### Follow-ups
 
-- Rename to `tg_linear.h` if kept — `tg_mlp.h` misdescribes a single linear layer.
+- Done (2026-09-20, Phase 2): renamed to `tg_linear.h` / `tg_linear.c` and fixed in the same commit; `tg_mlp.h` no longer exists and nothing includes it.
 
 ### Decision
 
