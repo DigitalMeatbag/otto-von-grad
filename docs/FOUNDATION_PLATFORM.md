@@ -148,7 +148,7 @@ Names and boundaries may shift; the principle should not: spec only the next imp
 | Bare vs. namespaced includes | Closed (deferred) | Stay bare until a package is about to be published separately; then switch in one commit, verifiable by zero `C1083` across consumers. |
 | Training harness placement | Closed | In `ovg_core`, finishing `tg_train.h`. Exact-resume is default on: checkpoints save optimizer state and step; parameter-only v2 files still load with moments rebuilt. |
 | `TgLinear` fate | Closed | Fix in place and rename to `tg_linear.h`: bias `[1, n_out]` expanded at forward, no baked-in batch, no out-parameter. |
-| Conv family scope | Open | See topic. |
+| Conv family scope | Closed | Driven by a first concrete DDPM (~32×32 RGB, small UNet, one attention level). First `conv2d` is im2col + cuBLAS GEMM, no cuDNN. `group_norm` is a separate op; `layer_norm` untouched. |
 | Vision-block placement | Closed | Create `ovg_vision` now (Phase 2). Further vision consumers are imminent, which satisfies the second-consumer rule ahead of time. |
 | Graph and dimension limits | Closed | `TG_MAX_DIMS` stays 4 — no plans need more. `topo_sort` goes iterative with growable graph capacity as a Phase 3 prerequisite. |
 
@@ -339,7 +339,8 @@ This is the one target project the current platform cannot serve at all, and the
 - `TG_MAX_DIMS = 4`. Activations `[B, C, H, W]` fit exactly. Attention inside a UNet must flatten spatial positions first (`[B, C, H, W]` → `tg_reshape` → `[B, HW, C]` → attention → reshape back); this is a reshape, not a new dimension, but it must be stated in the block's contract and tested.
 - `TG_MAX_GRAPH = 8192` with a recursive `topo_sort`. A UNet's node count scales with depth × blocks × ops-per-block and is not obviously under the cap. Converting `topo_sort` to iterative and either raising or making dynamic the graph capacity should be treated as a prerequisite, not a follow-up, once a first UNet is sketched.
 - Eager dispatch. A 32×32 DDPM is fine; 64×64 with attention will be slow. Batching is the first lever and must work from the start (no batch-1 designs).
-- cuDNN is not a dependency today. A first `conv2d` can be im2col + cuBLAS GEMM, which reuses the existing matmul path and keeps the dependency set unchanged.
+- cuDNN is not a dependency today and stays off the table: it would hide exactly the tensor math this project exists to make visible.
+- im2col memory: the unrolled buffer for a 3×3 filter is ~9× the input activation. At 32×32 with 128 channels that is ~1.2M floats per image; at 64×64 with 256 channels ~9.4M per image. On a 12 GB card, batch size becomes memory-bound before compute-bound — a reason to start at 32×32 and a reason the direct-kernel upgrade path must stay open behind the same `tg_conv2d` signature.
 
 ### Non-Goals
 
@@ -365,13 +366,18 @@ Pick a small DDPM (e.g. 32×32, 3 channels, a handful of residual blocks, one at
 
 ### Follow-ups
 
-- Sketch the first UNet's op count to size it against `TG_MAX_GRAPH` before committing to the capacity change.
-- Decide im2col-GEMM vs. direct conv kernel for the first `conv2d`; leaning im2col for reuse of the tested matmul path.
-- Decide whether `group_norm` generalises `tg_layer_norm` (normalise over a chosen set of axes) or is a separate op.
+- Sketch the first UNet's op count to size it against `TG_MAX_GRAPH` before committing to the capacity change (the change is a prerequisite regardless; the sketch sets the initial capacity).
+- Closed: im2col + GEMM (see Decision).
+- Closed: separate `group_norm` op (see Decision).
 
 ### Decision
 
-Open. Suggested direction is **Option B**, with the `topo_sort` / `TG_MAX_GRAPH` change pulled forward as a Phase 3 prerequisite.
+Closed (2026-09-20): **Option B — driven by a first concrete model.** The Phase 3 spec names a small DDPM (about 32×32 RGB, a few residual blocks, one attention level over flattened spatial positions) and builds exactly the ops it needs — expected: `conv2d` (also used strided for downsampling), `group_norm`, `silu`, nearest `upsample2d`, sinusoidal timestep embedding. `conv_transpose2d` and `max_pool2d` are not built until a model calls for them. The completion signal is that the model trains and sampling from noise produces recognizable images, not that op tests pass in isolation. The `topo_sort` / graph-capacity change is a prerequisite of the same phase.
+
+Two implementation choices are fixed here so the spec does not reopen them:
+
+- **`conv2d` is im2col + cuBLAS GEMM.** It rides on `tg_matmul`, the best-tested path in the library, and adds no dependency. A direct kernel is a permitted later replacement behind the same `tg_conv2d` signature if a profile shows conv dominating; cuDNN is not.
+- **`group_norm` is its own op**, `tg_group_norm(a, gamma, beta, n_groups, eps)` over `[B, C, H, W]` with per-channel affine. `tg_layer_norm` is not generalised; it is on every transformer's hot path and its contract stays as is. The duplicated mean/variance arithmetic is accepted.
 
 ---
 
