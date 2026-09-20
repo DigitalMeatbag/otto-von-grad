@@ -30,7 +30,7 @@ Decisions this spec makes (assigned to it by the foundation document):
 | Question | Decision |
 |---|---|
 | Exact v3 header fields | See [Format v3](#format-v3). |
-| Weights-only export: v2 or v3? | **v3 with the optimizer flag clear.** One writer; v2 becomes read-only legacy. |
+| Weights-only export: v2 or v3? | **v3 with the optimizer flag clear.** One format is written (both save functions emit v3); v2 becomes read-only legacy. |
 | Existing `tg_checkpoint_save` / `tg_checkpoint_load` signatures | **Unchanged.** They become the weights-only pair. The state-carrying pair is new. `tests/test_checkpoint.c`'s existing tests must pass without edits. |
 | Does the harness own the schedule? | No. Schedules are free functions; the caller computes `lr` and passes it to the update. |
 | vexilloscope's weight format | **Not migrated in Phase 1.** See [vexilloscope](#vexilloscope). |
@@ -39,7 +39,7 @@ Decisions this spec makes (assigned to it by the foundation document):
 
 ## Definitions
 
-- **Step.** The number of completed optimizer updates. `TgAdam.step` is 0 after creation and increments inside `tg_adam_update`. Adam bias correction uses this counter. A loop resuming from a checkpoint runs `for (step = opt.step + 1; ...)`. Schedules take the 1-based number of the step being taken.
+- **Step.** The number of completed optimizer updates. `TgAdam.step` is 0 after creation and increments inside `tg_adam_update`. Adam bias correction uses this counter. A loop resuming from a checkpoint runs `for (step = opt.step + 1; ...)` (candide is the one exception: its per-run counter stays `1..steps` and `opt.step` runs alongside it — see [candide](#examplescandidec)). Schedules take the 1-based number of the step being taken.
 - **Exact resume.** After `tg_checkpoint_load_run(..., TG_LOAD_RESUME)`, the parameters, Adam moments, step counter, and the library RNG state are what they were at save time. Continuing the loop from `opt.step + 1` produces the same parameters as the uninterrupted run, provided the application feeds the same data in the same order. The harness restores **library** randomness only (dropout, drop-path, sampling — everything on the xorshift32 stream). Application-side `rand()` calls (vexilloscope's balanced sampling, `img_augment`) are not restorable; an application that wants its data order restored stores its own cursor in the config blob, or draws from `tg_rng_uniform`.
 - **Micro-step.** One forward + backward whose gradient contributes `1/n_micro` of a step's gradient.
 
@@ -85,7 +85,7 @@ void   tg_adam_zero_grads(TgAdam *opt);                          /* tg_zero_grad
 void   tg_adam_accumulate(TgAdam *opt, Tensor *loss, int n_micro);
 ```
 
-`tg_adam_accumulate`: if `n_micro > 1`, `loss = tg_scale(loss, 1.0f / n_micro)`; then `tg_backward_accum(loss)`; then `tg_free_graph(loss)`. `loss` must be a non-persistent root; the caller reads its value (`tg_scalar_value`) **before** calling, because the graph is freed on return. `n_micro < 1` is fatal.
+`tg_adam_accumulate`: if `n_micro > 1`, `loss = tg_scale(loss, 1.0f / n_micro)`; then `tg_backward_accum(loss)`; then `tg_free_graph(loss)`. `loss` must be a non-persistent root; the caller reads its value (`tg_scalar_value`) **before** calling, because the graph is freed on return. Only non-persistent nodes are freed: persistent caller inputs (vexilloscope's patchified `p`, marked persistent so the graph walk stops there) remain the caller's to free, as today. `n_micro < 1` is fatal.
 
 `tg_adam_update` dispatches to the existing `tg_adam_step` (CPU) or `tg_adam_step_gpu` (device) with `opt->step` after increment; the raw functions are unchanged and remain public. The struct path must be numerically identical to the raw path (tested).
 
@@ -96,20 +96,24 @@ void   tg_adam_accumulate(TgAdam *opt, Tensor *loss, int n_micro);
 Pure functions. `step` is 1-based; `warmup_steps` may be 0; `total_steps > 0`.
 
 ```c
-/* Linear warmup from 0 over warmup_steps, then cosine from base to floor over total_steps.
-   step < warmup_steps  → base * step / warmup_steps   (times the cosine factor at that step)
-   progress = clamp((step - 1) / total_steps, 0, 1)
+/* Both functions share:
+     warm     = (step < warmup_steps) ? (float)step / (float)warmup_steps : 1.0f
+     progress = clamp((float)(step - 1) / (float)total_steps, 0, 1)
+   (float division throughout — never int/int). warm scales the whole value, floor included,
+   so during warmup lr rises linearly from base/warmup_steps toward the decay curve. */
+
+/* Cosine decay from base to floor over total_steps:
    lr = (floor + (base - floor) * 0.5 * (1 + cos(pi * progress))) * warm                      */
 float tg_lr_warmup_cosine(int step, int total_steps, int warmup_steps, float base, float floor_lr);
 
-/* Same warmup and progress; linear decay from base to floor over total_steps.
+/* Linear decay from base to floor over total_steps:
    lr = (base + (floor - base) * progress) * warm                                             */
 float tg_lr_warmup_linear(int step, int total_steps, int warmup_steps, float base, float floor_lr);
 ```
 
-With `floor_lr = 0`, `tg_lr_warmup_cosine` reproduces vexilloscope's schedule (`main.c:1174-1176`) exactly: `base * 0.5 * (1 + cos(pi * (step-1) / total)) * (step < warmup ? step / warmup : 1)`. A constant LR needs no function; the caller passes a constant.
+With `floor_lr = 0`, `tg_lr_warmup_cosine` is vexilloscope's schedule (`main.c:1174-1176`): `base * 0.5 * (1 + cos(pi * (step-1) / total)) * (step < warmup ? step / warmup : 1)`. The two agree to float rounding (vexilloscope evaluates `M_PI * (step-1) / total` left to right; the library computes `progress` first), which `test_lr_warmup_cosine` checks at every step of the vexilloscope grid. A constant LR needs no function; the caller passes a constant.
 
-### 3. Eval guard — additions to `tg_train.h`
+### 3. Eval guard — additions to `tg_train.h` (implemented in `src/tg_train.c`)
 
 ```c
 /* Sets tg_training = 0 and returns the previous value. Pair with tg_eval_end. */
@@ -124,7 +128,7 @@ static inline float tg_meter_mean(const TgMeter *m) { return m->n ? (float)(m->s
 
 This is the whole eval-loop skeleton. The caller writes the loop; the library owns only the mode toggle and the arithmetic. No callbacks.
 
-### 4. RNG state — additions to `tg_rng.h`
+### 4. RNG state — additions to `tg_rng.h` (implemented in `src/tg_rng.c`)
 
 ```c
 uint32_t tg_rng_get_state(void);        /* the xorshift32 word */
@@ -155,7 +159,7 @@ Little-endian, fixed-width. The optimizer section comes **after** the parameters
 uint32   magic        = 0x00475633   ("OVG3"; v2 was 0x00475632, v1 0x00475643)
 uint32   flags        bit 0: optimizer section present. All other bits must be 0 on read.
 int32    step         completed updates at save (0 for weights-only)
-uint32   rng_state    xorshift32 word at save (tg_rng_get_state())
+uint32   rng_state    xorshift32 word at save (tg_rng_get_state()) when flags bit 0 is set; 0 otherwise
 int32    config_len   >= 0
 uint8    config[config_len]
 int32    n_params
@@ -171,7 +175,7 @@ if flags & 1:
     float v[numel]
 ```
 
-Validation on read, all failing with a message on stderr and `-1`: magic ∈ {v2, v3}; unknown flag bits; `config_len < 0`; `n_params` mismatch; per-param `ndim`/shape mismatch; `optimizer_kind != 1`; beta1/beta2/eps differing from the target `TgAdam`'s (compared as floats, exact); short read.
+Validation on read, all failing with a message on stderr and `-1`. Header checks apply to all three readers (`tg_checkpoint_info`, `tg_checkpoint_load`, `tg_checkpoint_load_run`): magic ∈ {v2, v3}; unknown flag bits; `config_len < 0`; short read. Parameter checks apply to both loaders: `n_params` mismatch; per-param `ndim`/shape mismatch. Optimizer-section checks apply only when `tg_checkpoint_load_run` is restoring the section (RESUME on a file with flags bit 0 set): `optimizer_kind != 1`; beta1/beta2/eps differing from the target `TgAdam`'s (compared as floats, exact); `rng_state == 0` (xorshift32 cannot produce it, so it can only be corruption — reject rather than let `tg_rng_set_state` fatal). `INIT_FROM_WEIGHTS` and `tg_checkpoint_load` skip the section unread. No reader allocates for the config: `tg_checkpoint_info` copies at most `config_cap` bytes, the loaders `fseek` past it, so `config_len` needs no upper bound.
 
 **Atomic-ish write.** Both writers write to `<path>.tmp`, then remove `<path>` and rename `<path>.tmp` → `<path>`. A process killed mid-save leaves the previous checkpoint intact. On any write error the `.tmp` is removed and `-1` returned.
 
@@ -196,13 +200,13 @@ typedef enum {
 } TgLoadMode;
 
 /* Unchanged signatures. Weights-only. save writes v3 with flags = 0, step = 0,
-   rng_state = current, config_len = 0. load accepts v2 and v3 and reads params only. */
+   rng_state = 0, config_len = 0. load accepts v2 and v3 and reads params only. */
 int tg_checkpoint_save(const char *path, Tensor **params, int n);
 int tg_checkpoint_load(const char *path, Tensor **params, int n);
 
 /* Reads the header only. Copies min(config_len, config_cap) bytes into config_out
    (config_out may be NULL when config_cap == 0). Returns 0, or -1 on error / missing file.
-   v2 files report version = 2, has_optimizer = 0, step = 0, config_len = 0. */
+   v2 files report version = 2, has_optimizer = 0, step = 0, rng_state = 0, config_len = 0. */
 int tg_checkpoint_info(const char *path, TgCheckpointInfo *info, void *config_out, int config_cap);
 
 /* Full run state: opt->params, opt's m/v/step/betas/eps, the current RNG state, and config.
@@ -212,7 +216,7 @@ int tg_checkpoint_save_run(const char *path, const TgAdam *opt, const void *conf
 /* Loads into opt->params (uploading to the device if they are on one).
    RESUME on a file with an optimizer section: restores m/v (uploaded if on_cuda), step, RNG state.
    RESUME on a v2 file or a v3 file without an optimizer section: params loaded, tg_adam_reset(opt),
-     RNG untouched, and a notice on stdout:
+     RNG untouched (the header's rng_state is ignored), and a notice on stdout:
      "[ovg] checkpoint <path>: no optimizer state; moments zeroed, step reset to 0".
    INIT_FROM_WEIGHTS: params loaded, tg_adam_reset(opt), RNG untouched, optimizer section skipped.
    info may be NULL. Returns 0, or -1 on any error (nothing partially applied to opt on -1
@@ -247,8 +251,10 @@ for (int step = opt.step + 1; step <= total_steps; step++) {
     tg_adam_zero_grads(&opt);
     for (int b = 0; b < n_micro; b++) {
         Tensor *loss = forward(...);             /* caller-owned */
-        if (step % log_every == 0)               /* tg_scalar_value is a host sync on CUDA;
-            train_loss += tg_scalar_value(loss); /*   read only when logging, and before accumulate frees it */
+        /* tg_scalar_value is a host sync on CUDA: read only when logging,
+           and before accumulate frees the graph. */
+        if (step % log_every == 0)
+            train_loss += tg_scalar_value(loss);
         tg_adam_accumulate(&opt, loss, n_micro);
     }
     tg_adam_update(&opt, lr, 1.0f);              /* opt.step == step here */
@@ -273,17 +279,23 @@ Each consumer is migrated in its own repo (candide in this one), after the libra
 
 ### `examples/candide.c`
 
-- Replace the `m_buf`/`v_buf` allocation and the raw `tg_adam_step` with `TgAdam`.
+- Replace the `m_buf`/`v_buf` allocation and the raw `tg_adam_step` with `TgAdam`. Order becomes create model → collect params → `tg_adam_create` → `load_run` (today the load precedes the buffer allocation, `candide.c:100-117`).
 - Replace `tg_checkpoint_load` / `tg_checkpoint_save` with `tg_checkpoint_load_run(..., TG_LOAD_RESUME, ...)` / `tg_checkpoint_save_run` (config blob: a `TgGPTConfig`).
-- The demo keeps its "train `steps` more steps per run" behaviour: the per-run loop counter stays `1..steps`; `opt.step` is cumulative and is logged alongside it. Bias correction now uses the cumulative count, which is the correct behaviour the comment at `candide.c:106-107` ("a resumed run restarts momentum from scratch") apologises for.
+- **Periodic saves.** `save_run` at the existing eval site (the `step % 200 == 0` half of the condition at `candide.c:137`, not the `step == 1` half) and at the end, so a Ctrl-C loses at most 200 steps. Today the only save is at the end (`candide.c:179`).
+- The demo keeps its "train `steps` more steps per run" behaviour: the per-run loop counter stays `1..steps`; `opt.step` is cumulative and is logged alongside it (`step %4d/%d (total %d)`). Bias correction now uses the cumulative count, which is the correct behaviour the comment at `candide.c:106-107` ("a resumed run restarts momentum from scratch") apologises for. Exact-resume equivalence (same parameters as an uninterrupted run) is proven by `test_checkpoint_exact_resume`, not by the demo, whose data order follows the per-run counter.
+- The step body `tg_backward(loss)` / `tg_adam_step(...)` / `tg_free_graph(loss)` (`candide.c:134-135`, `156`) becomes `tg_adam_zero_grads(&opt)` / `tg_adam_accumulate(&opt, loss, 1)` / `tg_adam_update(&opt, lr, 0.0f)`. The trailing `tg_free_graph(loss)` **must be deleted** — accumulate already freed the graph, and a second walk is a use-after-free, not a leak. `tg_adam_zero_grads` is now required because `tg_backward_accum` does not zero.
+- `train_loss` is read from `loss` **before** `tg_adam_accumulate` (today it is read after `tg_backward`, `candide.c:138`).
 - Eval sites use `tg_eval_begin` / `tg_eval_end`.
 
 ### `../lambda`
 
 - `TgAdam` replaces the `#ifdef`-split `m_buf`/`v_buf` blocks (`main.c:332-350`, `399-401`, `470-475`); the device branch disappears because `TgAdam` follows the params.
-- Training a phase: if that phase's own checkpoint exists, `load_run(..., TG_LOAD_RESUME)` and continue from `opt.step + 1`; else if `phase > 1`, `load_run(phase N-1 file, TG_LOAD_INIT_FROM_WEIGHTS)`; else from scratch. This is a behaviour change: today a phase always warm-starts from N−1 and never resumes itself. A completed phase (step == 50000) therefore does nothing when re-run, which is the correct reading of "already trained".
+- Training a phase: if that phase's own checkpoint exists, `load_run(..., TG_LOAD_RESUME)` and continue from `opt.step + 1`; else if `phase > 1`, `load_run(phase N-1 file, TG_LOAD_INIT_FROM_WEIGHTS)`; else from scratch. This is a behaviour change: today phase 1 reloads its own weights with fresh moments, and phase > 1 always warm-starts from N−1 (`main.c:108-113`); no phase resumes its own optimizer state.
+- **Periodic saves.** `save_run` at the existing log site and at the end; today the only save is at the end (`main.c:464`), so a mid-phase Ctrl-C would still lose the phase.
+- **Completed-phase guard.** If `load_run(RESUME)` leaves `opt.step >= steps` (50000), print `[lambda] phase N complete at step %d` and skip both the training loop and the final save — the checkpoint is not rewritten. Re-running a finished phase is a no-op, which is the correct reading of "already trained".
 - Inference mode keeps `tg_checkpoint_load` (weights only, no optimizer).
 - Order: create model → upload params → `tg_adam_create` → `load_run`. lambda's `tg_seed` call must precede `load_run`.
+- Same step-body rewrite as candide: `tg_backward(loss)` / `tg_adam_step*` / `tg_free_graph(loss)` (`main.c:397-401`, `421`) → `tg_adam_zero_grads` / `tg_adam_accumulate(&opt, loss, 1)` / `tg_adam_update(&opt, lr, 0.0f)`; the trailing `tg_free_graph(loss)` is deleted; `train_loss` (`main.c:405`) is read before accumulate.
 - The constant `lr = 3e-4f` stays a constant.
 
 ### `../vexilloscope`
@@ -291,7 +303,7 @@ Each consumer is migrated in its own repo (candide in this one), after the libra
 Migrated: the harness code in `main.c` only.
 
 - Adam buffers (`main.c:1144-1170`, the `shape[0] * shape[1]` size computation, and the two `#ifdef` update branches) → `TgAdam`.
-- Schedule (`main.c:1174-1176`) → `tg_lr_warmup_cosine(step, VX_VIT_STEPS, VX_WARMUP_STEPS, 3e-4f, 0.0f)`. The value at every step must match the inline formula (it does by construction; the retrain that vexilloscope needs anyway is the check).
+- Schedule (`main.c:1174-1176`) → `tg_lr_warmup_cosine(step, VX_VIT_STEPS, VX_WARMUP_STEPS, 3e-4f, 0.0f)`. Equivalence to the inline formula is checked by `test_lr_warmup_cosine` on the vexilloscope grid; the retrain is not a check (its data order is `rand()`-driven).
 - Accumulation (`tg_zero_grads` / `tg_scale` / `tg_backward_accum` / `tg_free_graph`, `main.c:1180-1216`) → `tg_adam_zero_grads` / `tg_adam_accumulate`. `batch_loss` is read from `loss` before accumulate, as today.
 - Clip + update (`main.c:1223-1229`) → `tg_adam_update(&opt, lr, 1.0f)`.
 - The five `tg_training = 0` sites → `tg_eval_begin` / `tg_eval_end`.
@@ -314,7 +326,7 @@ New file `tests/test_optim.c` (registered in `test_main.c`), additions to `tests
 | `test_adam_update_returns_norm` | On CPU, `tg_adam_update(opt, lr, max)` returns the value `tg_clip_grad_norm` would; with `max = 0` returns 0 and does not scale. |
 | `test_adam_step_counter` | `opt.step` equals the number of `tg_adam_update` calls. |
 | `test_adam_bad_args_fatal` | `n_params = 0` and `n_micro = 0` hit `ovg_fatal` (setjmp/longjmp). |
-| `test_lr_warmup_cosine` | `warmup = 10, total = 100, base = 1, floor = 0.1`: step 1 → 0.1 × cos-factor; step 10 → ≈ 0.98 (warmup done, cosine barely started); step 101 → 0.1 (clamped); monotone non-increasing after warmup. `warmup = 0` never divides by zero. |
+| `test_lr_warmup_cosine` | `warmup = 10, total = 100, base = 1, floor = 0.1`: step 1 → 0.1 (warm 0.1, cosine factor 1); step 10 → ≈ 0.982 (warmup done, cosine barely started); step 101 → 0.1 (clamped); monotone non-increasing after warmup. `warmup = 0` never divides by zero. vexilloscope grid (`total = 60000, warmup = 2400, base = 3e-4, floor = 0`): `|lr_lib − lr_vex| ≤ 1e-6 × base` at every step against the inline `main.c:1174-1176` formula (absolute, scaled to `base`: `1 + cos(pi * progress)` cancels catastrophically near `progress = 1`, so a relative bound is unsatisfiable there). |
 | `test_lr_warmup_linear` | Same grid: step 10 → 0.919 (1 + (0.1 − 1) × 0.09), step 51 → 0.55, step 101 → 0.1. |
 | `test_eval_guard` | `tg_training = 1`; `prev = tg_eval_begin()` → `tg_training == 0`, `prev == 1`; `tg_eval_end(prev)` → 1. `TgMeter` mean of {1,2,3} is 2; empty meter is 0. |
 | `test_rng_state_roundtrip` | `s = tg_rng_get_state()`; draw 3; `tg_rng_set_state(s)`; draw 3 again; sequences equal. `tg_rng_set_state(0)` is fatal. |
@@ -326,12 +338,12 @@ New file `tests/test_optim.c` (registered in `test_main.c`), additions to `tests
 | Test | Checks |
 |---|---|
 | `test_checkpoint_v3_run_roundtrip` | Model + `TgAdam`, 3 updates, `tg_rng_set_state(0xC0FFEE)`, config bytes `"cfg!"`; `save_run`; corrupt params, moments, step, RNG; `load_run(RESUME, &info)`: params, m, v bitwise restored; `step == 3`; `tg_rng_get_state() == 0xC0FFEE`; `info.version == 3`, `has_optimizer == 1`, `config_len == 4`. |
-| `test_checkpoint_info_before_model` | `tg_checkpoint_info` on that file with a 16-byte buffer returns the 4 config bytes, `n_params`, and the flags, with no tensors allocated. Missing file → -1. |
+| `test_checkpoint_info_before_model` | `tg_checkpoint_info` on that file with a 16-byte buffer returns the 4 config bytes, `n_params`, `has_optimizer == 1`, `step == 3`, `rng_state == 0xC0FFEE`, with no tensors allocated. Missing file → -1. |
 | `test_checkpoint_v2_loads_with_reset` | Write a v2 file by hand (magic `0x00475632`, count, params); `load_run(RESUME)` returns 0; params loaded; moments zero; `step == 0`; RNG state unchanged; `info.version == 2`. |
 | `test_checkpoint_init_from_weights` | Full v3 file; `load_run(INIT_FROM_WEIGHTS)`: params loaded; moments zero; `step == 0`; RNG state unchanged. |
-| `test_checkpoint_weights_only_then_run` | `tg_checkpoint_save`; `load_run(RESUME)` returns 0 with `has_optimizer == 0`, moments zero, `step == 0`. And the reverse: `save_run`; plain `tg_checkpoint_load` reads params and ignores the optimizer section. |
-| `test_checkpoint_hparam_mismatch` | `save_run` with beta1 = 0.9; `load_run` into a `TgAdam` with beta1 = 0.8 → -1. Unknown flag bit → -1. |
-| `test_checkpoint_exact_resume` | Model with dropout 0.5 in training mode, fixed data. Run A: 6 updates. Run B: 3 updates, `save_run`, fresh model + `TgAdam`, `load_run(RESUME)`, 3 more updates. Params bitwise equal on CPU. |
+| `test_checkpoint_weights_only_then_run` | `tg_checkpoint_save`; `load_run(RESUME)` returns 0 with `has_optimizer == 0`, `info.rng_state == 0`, moments zero, `step == 0`, live RNG state unchanged. And the reverse: `save_run`; plain `tg_checkpoint_load` reads params and ignores the optimizer section. |
+| `test_checkpoint_hparam_mismatch` | `save_run` with beta1 = 0.9; `load_run` into a `TgAdam` with beta1 = 0.8 → -1. Unknown flag bit → -1 from all three readers. Optimizer section with `rng_state == 0` → -1 on RESUME, 0 on INIT_FROM_WEIGHTS. Neither file is producible by the writer: `save_run`, then patch the `flags` / `rng_state` bytes in place (offsets 4 and 12). |
+| `test_checkpoint_exact_resume` | Model with dropout 0.5 in training mode, fixed data. Both runs start from the same initial parameters (copied) and the same xorshift state (`tg_rng_set_state` before each). Run A: 6 updates. Run B: 3 updates, `save_run`, fresh model + `TgAdam`, `load_run(RESUME)`, 3 more updates. Params bitwise equal on CPU. |
 | `test_checkpoint_tmp_replaced` | After a successful save no `<path>.tmp` remains; after a save to an unopenable path, -1 and no partial file. |
 | `test_checkpoint_v3_cuda_roundtrip` *(CUDA)* | As `v3_run_roundtrip` with params and moments on the device; compared after sync within 1e-6. |
 
@@ -347,7 +359,7 @@ New file `tests/test_optim.c` (registered in `test_main.c`), additions to `tests
 - Training API: add the `TgAdam` block, eval guard, and schedules; note that the raw `tg_adam_step*` remain.
 - Checkpoints: replace the v2 layout with the v3 layout, the info/save_run/load_run API, the load modes, and the v2 compatibility rule.
 - RNG and Seeding: add `tg_rng_get_state` / `tg_rng_set_state` and the ordering contract.
-- CUDA Support → Internal: add the three float-buffer helpers.
+- CUDA Support → Internal: add the three float-buffer helpers; the "used by `tg_ops.c` / `tg_train.c` only" sentence (also in Include Style and Repository Structure) gains `tg_optim.c` / `tg_checkpoint.c`.
 - Build Commands / Verification: new test count.
 - Important Guidance: "create `TgAdam` after moving params to their device; call `tg_seed` before `tg_checkpoint_load_run`."
 
@@ -386,7 +398,7 @@ New file `tests/test_optim.c` (registered in `test_main.c`), additions to `tests
 - [ ] Checkpoint v3 writer/readers implemented; v2 files load; the three pre-existing checkpoint tests pass unchanged.
 - [ ] `cmake --build --preset default` clean; `otto_von_grad_tests.exe` reports all pass at the new count; `cmake --preset cpu` build passes its count.
 - [ ] `ovg_core`, `ovg_nn`, `ovg_lm` each build standalone.
-- [ ] `examples/candide.c` migrated; a run stopped by Ctrl-C mid-way and restarted resumes at the logged step.
-- [ ] `../lambda` migrated and builds with no CMake edits; phase 2 warm-starts from phase 1 with `step == 0`.
+- [ ] `examples/candide.c` migrated with periodic saves; a run stopped by Ctrl-C mid-way and restarted reports the cumulative `opt.step` of the last save and continues from it.
+- [ ] `../lambda` migrated and builds with no CMake edits; with no phase-2 checkpoint present, phase 2 warm-starts from phase 1 with `step == 0`; re-running a completed phase prints the complete notice and does not rewrite its checkpoint.
 - [ ] `../vexilloscope` migrated (harness only) and builds; `main.c` line count reduced; schedule values unchanged.
 - [ ] `AGENTS.md` updated as listed; `FOUNDATION_PLATFORM.md` claims table and baseline updated.
