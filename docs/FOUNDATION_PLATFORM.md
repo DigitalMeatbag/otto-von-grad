@@ -4,6 +4,78 @@
 
 ---
 
+## Vision
+
+> This section describes the *result* of the planned work in product terms, for use in product-shaped
+> investigations (who wants this, what it competes with, what it must not claim). The engineering intent
+> and plan follow it.
+
+### One line
+
+otto-von-grad is a from-scratch C11 machine-learning platform: an autograd engine, a training harness,
+and small composable packages for language, vision, and image generation — with no dependencies beyond
+a C compiler and, optionally, CUDA.
+
+### Thirty seconds
+
+Most ML work happens on top of PyTorch or JAX: millions of lines you cannot read, a Python runtime, a
+dependency tree you do not control. otto-von-grad is the opposite bet. It is a complete ML stack in a
+few thousand lines of C that one person can hold in their head — every tensor operation written out
+with its gradient beside it, every kernel visible, every model built by hand from the same small set of
+parts.
+
+On top of that engine sits a training harness that any project gets for free: optimizers, schedules,
+checkpoints that resume exactly where they stopped. Above that, three lean packages — `ovg_lm` for
+GPT-style language models, `ovg_vision` for vision transformers, `ovg_diffusion` for image generators —
+each independently usable, each a few hundred lines, each proven by a real application built on it.
+
+The result is a platform for building *focused* models: a lambda-calculus reasoner, a flag classifier,
+a small image generator — models trained on a single consumer GPU, where you understand exactly what the
+machine is doing and why, because you can read all of it.
+
+### What makes it a product rather than a hobby
+
+The pitch is not "faster than PyTorch." It is **legible**. Every model built on OVG is fully
+inspectable down to the arithmetic, has no supply chain, compiles to a single static binary, and runs
+anywhere a C compiler runs. That makes it the right tool when someone needs to *own* a model end to end
+— embedded, air-gapped, auditable, taught, or simply understood — rather than rent one.
+
+### Claims the pitch may make, and the evidence behind each
+
+| Claim | Basis today | Watch |
+|---|---|---|
+| Complete stack in a few thousand lines | ~7k lines including tests and CUDA kernels | Roughly doubles through Phase 3; re-count before quoting a number. |
+| No dependencies beyond a C compiler (+ optional CUDA) | True; cuDNN is explicitly excluded by decision | Keep it true — the conv-family decision depends on it. |
+| Every op has its gradient beside it | Enforced coding rule; 80 tests | — |
+| Exact resume from any checkpoint | Decided (Phase 1); not yet built | Do not claim until Phase 1 ships. |
+| Independently usable modality packages | `ovg_lm` exists; `ovg_vision` Phase 2; `ovg_diffusion` Phase 4 | One of three today. |
+| Proven by real applications | `lambda` (GPT) and `vexilloscope` (ViT) both build; vexilloscope needs a retrain | Image generation has no application yet. |
+| Trains on a single consumer GPU | RTX 4070 Super, 12 GB, is the reference machine | Yes for focused models; see below. |
+
+### Claims the pitch must not make
+
+- **Not "fast."** Dispatch is eager, one kernel per op, no fusion. A batch-1 ViT with 1,025 tokens
+  runs ~3 steps/s on the reference GPU. The pitch leans on understanding and ownership, not throughput.
+  If an investigation surfaces a buyer whose need is throughput, that is a signal against fit, not a gap
+  to paper over.
+- **Not "large models."** Focused models are the design point: single GPU, thousands to low millions of
+  parameters, one task. Nothing in the plan targets scale.
+- **Not "production inference infrastructure."** No serving layer, no quantisation, no export format
+  beyond the library's own checkpoint. A model built on OVG ships as a C program that links OVG.
+
+### Who this is plausibly for
+
+Product investigations should test these rather than assume them:
+
+- **People who need to understand a model, not just run one** — educators, researchers writing about
+  training dynamics, engineers who have been burned by an opaque framework.
+- **Constrained or controlled environments** — embedded targets, air-gapped systems, contexts where a
+  dependency audit of PyTorch is a non-starter but a few thousand lines of C is reviewable.
+- **Builders of narrow models** who want a single-binary artifact with no runtime: a classifier in a
+  Discord bot (vexilloscope's actual deployment), a domain-specific reasoner, a small generator.
+
+---
+
 ## Intent
 
 OVG becomes a layered C11 machine-learning platform. The bottom layer is a general autograd engine and training harness that knows nothing about models. Above it sit model-agnostic building blocks. Above those sit small, separable modality packages — language, vision, generation — each of which can eventually be consumed or published on its own. Applications live in sibling repositories and link only the layers they need.
