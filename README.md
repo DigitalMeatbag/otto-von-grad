@@ -137,5 +137,4 @@ include/ovg/   public headers (one per module; prefix tg_, plus ovg_error.h)
 src/           implementation, CUDA kernels, and two private headers
 tests/         test suite (ovg_test.h macros + one file per module)
 examples/      candide.c demo and its corpus
-legacy/        scalar autograd from the original learning exercise (not compiled)
 ```

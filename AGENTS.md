@@ -66,9 +66,6 @@ otto-von-grad/
     test_checkpoint.c               — save/load round-trip, bad magic, count mismatch
     test_sample.c                   — argmax, top-k determinism, index bounds
     test_main.c                     — test runner entry point
-  legacy/
-    value.c / value.h               — scalar autograd (learning exercise, not compiled)
-    mlp.c / mlp.h                   — scalar MLP (learning exercise, not compiled)
 ```
 
 ---
