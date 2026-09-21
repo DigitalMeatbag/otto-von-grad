@@ -214,7 +214,7 @@ Scope: the training harness (optimizer state as a struct, LR schedules, gradient
 
 ```text
 SPEC_PLATFORM_PHASE2_VISION.md       # TgLinear fix + rename; new ovg_vision target with TgPatchEmbed + pooling; vexilloscope adopts both
-SPEC_PLATFORM_PHASE3A_CONV.md        # iterative topo_sort + growable graph; conv2d, group_norm, silu, upsample2d, sinusoidal embedding; conv residual/down/up blocks in ovg_nn — sized by the DDPM sketch
+SPEC_PLATFORM_PHASE3A_CONV.md        # written 2026-09-20: iterative topo_sort + growable graph; NHWC conv family (silu, im2col/conv2d, upsample2d, group_norm, sinusoidal embedding); TgConv2d, TgConvResBlock, TgSpatialAttention in ovg_nn — sized by the DDPM sketch
 SPEC_PLATFORM_PHASE3B_DIFFUSION.md   # new ovg_diffusion target (UNet assembly, noise schedule, sampler); the first DDPM trains and samples recognizably
 SPEC_PLATFORM_PHASE4_PACKAGES.md     # namespaced includes, extraction readiness
 ```
@@ -234,7 +234,7 @@ Names and boundaries may shift; the principle should not: spec only the next imp
 | Bare vs. namespaced includes | Closed (deferred) | Stay bare until a package is about to be published separately; then switch in one commit, verifiable by zero `C1083` across consumers. |
 | Training harness placement | Closed | In `ovg_core`, finishing `tg_train.h`. Exact-resume is default on: checkpoints save optimizer state, step, and RNG state; load takes an explicit mode (resume, or init-from-weights for warm starts); parameter-only v2 files still load with moments zeroed and step reset. |
 | `TgLinear` fate | Closed | Fix in place and rename to `tg_linear.h`: bias `[1, n_out]` expanded at forward, no baked-in batch, no out-parameter. |
-| Conv family scope | Closed | Driven by a first concrete DDPM (~32×32 RGB, small UNet, one attention level). First `conv2d` is im2col + cuBLAS GEMM, no cuDNN. `group_norm` is a separate op; `layer_norm` untouched. `ovg_diffusion` (UNet assembly, schedule, sampler) is created in Phase 3b so the DDPM can be trained and sampled; Phase 3a is the graph change, the ops, and the conv blocks. |
+| Conv family scope | Closed | Driven by a first concrete DDPM (~32×32 RGB, small UNet, one attention level). First `conv2d` is im2col + cuBLAS GEMM, no cuDNN; activations are NHWC `[B, H, W, C]` (3a spec, 2026-09-20). `group_norm` is a separate op; `layer_norm` untouched. `ovg_diffusion` (UNet assembly, schedule, sampler) is created in Phase 3b so the DDPM can be trained and sampled; Phase 3a is the graph change, the ops, and the conv blocks. |
 | Vision-block placement | Closed | Create `ovg_vision` now (Phase 2). Further vision consumers are imminent, which satisfies the second-consumer rule ahead of time. |
 | Graph and dimension limits | Closed | `TG_MAX_DIMS` stays 4 — no plans need more. `topo_sort` goes iterative with growable graph capacity as a Phase 3a prerequisite. |
 
@@ -423,11 +423,11 @@ This is the one target project the current platform cannot serve at all, and the
 ### Constraints
 
 - Every new op ships with its paired backward, a CPU path, a CUDA path, and tests — the existing rule.
-- `TG_MAX_DIMS = 4`. Activations `[B, C, H, W]` fit exactly. Attention inside a UNet must flatten spatial positions first (`[B, C, H, W]` → `tg_reshape` → `[B, HW, C]` → attention → reshape back); this is a reshape, not a new dimension, but it must be stated in the block's contract and tested.
+- `TG_MAX_DIMS = 4`. Activations are 4D and **NHWC, `[B, H, W, C]`** (decided at Phase 3a spec time, 2026-09-20: feature-last is the library's convention everywhere else, the im2col conv then needs no transpose, and the attention flatten is a pure reshape — `[B, H, W, C]` → `tg_reshape` → `[B, HW, C]` → attention → reshape back). Attention inside a UNet flattens spatial positions this way; it is a reshape, not a new dimension, and is stated in the block's contract and tested.
 - `TG_MAX_GRAPH = 8192` with a recursive `topo_sort`. A UNet's node count scales with depth × blocks × ops-per-block and is not obviously under the cap. Converting `topo_sort` to iterative and either raising or making dynamic the graph capacity should be treated as a prerequisite, not a follow-up, once a first UNet is sketched.
 - Eager dispatch. A 32×32 DDPM is fine; 64×64 with attention will be slow. Batching is the first lever and must work from the start (no batch-1 designs).
 - cuDNN is not a dependency today and stays off the table: it would hide exactly the tensor math this project exists to make visible.
-- im2col memory: the unrolled buffer for a 3×3 filter is ~9× the input activation. At 32×32 with 128 channels that is ~1.2M floats per image; at 64×64 with 256 channels ~9.4M per image. On a 12 GB card, batch size becomes memory-bound before compute-bound — a reason to start at 32×32 and a reason the direct-kernel upgrade path must stay open behind the same `tg_conv2d` signature.
+- im2col memory: the unrolled buffer for a 3×3 filter is ~9× the input activation, and because it is a graph node it carries a grad buffer of the same size until `tg_free_graph` — ~18× effective. At 32×32 with 128 channels that is ~1.2M floats per image per conv (~2.4M with grad); at 64×64 with 256 channels ~9.4M. On a 12 GB card, batch size becomes memory-bound before compute-bound — a reason to start at 32×32 and a reason the direct-kernel upgrade path must stay open behind the same `tg_conv2d` signature. The Phase 3a sketch sums this over a whole UNet: ≈130 MB per image at `C0 = 64`, so batch 32 fits.
 
 ### Non-Goals
 
@@ -453,7 +453,7 @@ Pick a small DDPM (e.g. 32×32, 3 channels, a handful of residual blocks, one at
 
 ### Follow-ups
 
-- Sketch the first UNet's op count to size it against `TG_MAX_GRAPH` before committing to the capacity change (the change is a prerequisite regardless; the sketch sets the initial capacity).
+- Closed (2026-09-20, `docs/SPEC_PLATFORM_PHASE3A_CONV.md` → The 3b Sketch): the first UNet (32×32, `C0 = 64`, mults (1, 2, 2), 2+3 res blocks per level, attention at 16×16) comes to ≈1,070 graph nodes — about 7.5× under the 8192 cap, calibrated against a measured 321 for vexilloscope's ViT. The capacity change is made anyway (recursion depth and a compile-time ceiling are the real problems); the growable list starts at 1,024 entries.
 - Closed: im2col + GEMM (see Decision).
 - Closed: separate `group_norm` op (see Decision).
 
@@ -461,11 +461,11 @@ Pick a small DDPM (e.g. 32×32, 3 channels, a handful of residual blocks, one at
 
 Closed (2026-09-20): **Option B — driven by a first concrete model.** The Phase 3 spec names a small DDPM (about 32×32 RGB, a few residual blocks, one attention level over flattened spatial positions) and builds exactly the ops it needs — expected: `conv2d` (also used strided for downsampling), `group_norm`, `silu`, nearest `upsample2d`, sinusoidal timestep embedding. `conv_transpose2d` and `max_pool2d` are not built until a model calls for them. The completion signal is that the model trains and sampling from noise produces recognizable images, not that op tests pass in isolation. The `topo_sort` / graph-capacity change is a prerequisite of the same phase. Because the signal requires a schedule and a sampler, **`ovg_diffusion` is created in Phase 3**, holding the UNet assembly, the noise schedule, and the sampler; the conv blocks below it go in `ovg_nn`. Phase 4 is then namespaced includes and extraction readiness only.
 
-Phase 3 is specified as two slices so that each stays implementable on its own: **3a** — the iterative `topo_sort` and growable graph, the ops listed above, and the conv residual/down/up blocks in `ovg_nn`, with the op set fixed by a sketch of the 3b model and a completion signal of "op tests pass, the blocks build, and a UNet-shaped graph exceeds the old 8192-node cap without fataling"; **3b** — the `ovg_diffusion` target and the DDPM itself, carrying the recognizable-samples signal. The sketch is written first, as part of 3a's spec, so 3a builds nothing 3b does not use.
+Phase 3 is specified as two slices so that each stays implementable on its own: **3a** — the iterative `topo_sort` and growable graph, the ops listed above, and the conv residual/down/up blocks in `ovg_nn`, with the op set fixed by a sketch of the 3b model and a completion signal of "op tests pass, the blocks build, a synthetic graph of 3× the old 8192-node cap runs without fataling, and the sketch's node count is confirmed by a test" (the original clause, "a UNet-shaped graph exceeds the old cap", was dropped at 3a spec time once the sketch showed the model lands near 1,000 nodes); **3b** — the `ovg_diffusion` target and the DDPM itself, carrying the recognizable-samples signal. The sketch is written first, as part of 3a's spec, so 3a builds nothing 3b does not use.
 
 Two implementation choices are fixed here so the spec does not reopen them:
 
-- **`conv2d` is im2col + cuBLAS GEMM.** It rides on `tg_matmul`, the best-tested path in the library, and adds no dependency. A direct kernel is a permitted later replacement behind the same `tg_conv2d` signature if a profile shows conv dominating; cuDNN is not.
+- **`conv2d` is im2col + cuBLAS GEMM.** It rides on `tg_matmul`, the best-tested path in the library, and adds no dependency. At 3a spec time this was made literal: `tg_im2col` is the one new op (with col2im as its backward), and `tg_conv2d` is a composition `im2col → tg_matmul → tg_reshape (→ bias)` in NHWC. A direct kernel is a permitted later replacement behind the same `tg_conv2d` signature if a profile shows conv dominating; cuDNN is not.
 - **`group_norm` is its own op**, `tg_group_norm(a, gamma, beta, n_groups, eps)` over `[B, C, H, W]` with per-channel affine. `tg_layer_norm` is not generalised; it is on every transformer's hot path and its contract stays as is. The duplicated mean/variance arithmetic is accepted.
 
 ---
@@ -496,7 +496,7 @@ They have been invisible because every model so far is a modest transformer. The
 
 ### Follow-ups
 
-- Measure the node count of the first UNet sketch and of vexilloscope's ViT to know how close current models already are.
+- Closed (2026-09-20, measured with a scratch consumer walking `parents[]` as `topo_sort` does): vexilloscope's ViT (6 blocks, training, drop-path active) is 321 nodes; a 6-block GPT is 281; one encoder block is 44 ops + 12 params in eval, 52 ops in training. The 3a UNet sketch is ≈1,070. Node count is a function of graph structure only, not of `B`, `T`, `C`, or image size.
 
 ### Decision
 
