@@ -1,6 +1,6 @@
 # Spec: Platform Phase 2 — Vision
 
-> **Status:** Implemented 2026-09-20 (library at `956eb0c`, vexilloscope `2d0a14b`; this document and `FOUNDATION_PLATFORM.md` in the docs commit that follows); every Acceptance item is checked except the retrain, which is sequenced after and not gated, and the `main.c` line-count clause, which is annotated. Reviewed 2026-09-20 (the one open fork closed, see [Open Questions](#open-questions)). Derived from `docs/FOUNDATION_PLATFORM.md` (Decision Log rows "`TgLinear` fate" and "Vision-block placement", both closed 2026-09-20) and from the Phase 1 hand-off in `docs/SPEC_PLATFORM_PHASE1_HARNESS.md` → Consumer Migrations → vexilloscope ("Not migrated"). `AGENTS.md` describes what exists (at spec time: library at `25a1a0a`, tests 101 CUDA / 89 CPU; after this phase: 120 / 105); this document describes exactly what Phase 2 adds, and is complete when every item in [Acceptance](#acceptance) is checked.
+> **Status:** Implemented 2026-09-20 (library at `956eb0c`, vexilloscope `2d0a14b`; this document and `FOUNDATION_PLATFORM.md` in the docs commit that follows); every Acceptance item is checked except the retrain, which the owner dropped on 2026-09-20 (not gated; annotated), and the `main.c` line-count clause, which is annotated. **Phase 2 is closed.** Reviewed 2026-09-20 (the one open fork closed, see [Open Questions](#open-questions)). Derived from `docs/FOUNDATION_PLATFORM.md` (Decision Log rows "`TgLinear` fate" and "Vision-block placement", both closed 2026-09-20) and from the Phase 1 hand-off in `docs/SPEC_PLATFORM_PHASE1_HARNESS.md` → Consumer Migrations → vexilloscope ("Not migrated"). `AGENTS.md` describes what exists (at spec time: library at `25a1a0a`, tests 101 CUDA / 89 CPU; after this phase: 120 / 105); this document describes exactly what Phase 2 adds, and is complete when every item in [Acceptance](#acceptance) is checked.
 
 ---
 
@@ -334,6 +334,8 @@ Under the auto-resume decision ([Open Questions](#open-questions), closed 2026-0
 
 After the vexilloscope commit lands: delete the v1 `vit_weights.bin`, run the full 60,000-step training. Its output is the first v3 `vit_weights.bin`; identify modes and the bot pick it up with no further change. Accuracy is reported in vexilloscope's own docs and is not an acceptance item of this spec (the schedule and model are unchanged by this phase; the retrain is owed to the v1→v2 shape change, not to Phase 2).
 
+**Dropped 2026-09-20:** the owner chose not to run the retrain. vexilloscope has no `vit_weights.bin`; the first train-mode run will start from scratch under the resume block above. Nothing in Phase 3a or later depends on it.
+
 ---
 
 ## Tests
@@ -453,7 +455,7 @@ vexilloscope (`../vexilloscope`, one commit):
 - [x] With the file from the previous item present at `--weights`, `--warmstart <that file>` is refused with the `--warmstart would overwrite it` message; with a fresh `--weights` path and `--warmstart <that file>` plus a labels file with more classes, the run starts with `Wout` widened (notice printed) and `opt.step == 0`.
 - [x] All four `--identify*` modes load that v3 file and produce output in their existing formats (`--identify-json` stdout is a single JSON line; the seed and `loaded weights` notices are on stderr).
 - [ ] `main.c` shrinks or holds (the resume block is added; the save/free reorder is neutral); `vit.c` shrinks by the deleted format code (expected well under 200 lines from 362). *(Result: `vit.c` 362 → 191 lines, as expected. `main.c` 1,257 → 1,335: the resume block (~50 lines), the periodic and final `save_run` blocks, the `_Static_assert`, and a seven-line fix for a pre-existing crash in the train-mode tail — the params were left `on_cuda = 0` after the CPU clean-accuracy pass and the identify demos, which upload their patches, died with `make_op: mixed CUDA/CPU parents` — outweigh the one deleted `vx_vit_save` call. The "shrinks or holds" premise was wrong as written; the growth is the resume path this spec adds.)*
-- [ ] After the commit: the v1 `vit_weights.bin` is deleted and the full retrain is started; the file it writes is the deployed model. (Not gated on accuracy.) *(The v1 file was removed from the vexilloscope root on 2026-09-20; the 60,000-step retrain has not been started.)*
+- [ ] After the commit: the v1 `vit_weights.bin` is deleted and the full retrain is started; the file it writes is the deployed model. (Not gated on accuracy.) *(The v1 file was removed from the vexilloscope root on 2026-09-20. The 60,000-step retrain was **dropped by the owner** the same day; this item stays unchecked as a record, not as outstanding work.)*
 
 Documentation:
 
